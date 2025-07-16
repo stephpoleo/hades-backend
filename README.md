@@ -1,6 +1,6 @@
 # Hades Backend
 
-API REST backend desarrollada con Django y Django REST Framework para el proyecto Hades.
+API REST backend desarrollada con Django y Django REST Framework para el proyecto Hades, que sustituye a sistema de JARBOSS.
 
 ## 🚀 Características
 
@@ -182,14 +182,6 @@ python manage.py collectstatic
 python manage.py check --deploy
 ```
 
-## 🤝 Contribución
-
-1. Fork el proyecto
-2. Crea una rama para tu feature (`git checkout -b feature/nueva-funcionalidad`)
-3. Commit tus cambios (`git commit -am 'Agregar nueva funcionalidad'`)
-4. Push a la rama (`git push origin feature/nueva-funcionalidad`)
-5. Crea un Pull Request
-
 ## 📞 Soporte
 
 Para reportar problemas o solicitar ayuda:
@@ -197,21 +189,13 @@ Para reportar problemas o solicitar ayuda:
 - Crea un issue en GitLab
 - Contacta al equipo de desarrollo
 
-## 🗺️ Roadmap
-
-- [ ] Implementar autenticación JWT
-- [ ] Agregar tests unitarios
-- [ ] Implementar logging avanzado
-- [ ] Configurar CI/CD
-- [ ] Documentación de API con Swagger
-
 ## 👥 Autores
 
-- **Equipo NatGas TI** - Desarrollo inicial
+- **Equipo NatDev** - Conformado por Stephanie Poleo, José Hernández del Castillo y Ángela Flores Araujo
 
 ## 📄 Licencia
 
-Este proyecto es propietario de NatGas.
+Este proyecto pertenece a NatGas.
 
 ## 📊 Estado del proyecto
 
