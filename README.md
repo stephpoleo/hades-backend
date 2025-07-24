@@ -18,6 +18,72 @@ API REST backend desarrollada con Django y Django REST Framework para el proyect
 
 ## 🛠️ Instalación
 
+### Método 1: Usando Makefile (Recomendado)
+
+Si tienes `make` instalado en tu sistema:
+
+```bash
+# Ver todos los comandos disponibles
+make help
+
+# Configuración completa desde cero
+make all-setup
+
+# Crear superusuario
+make create-superuser
+
+# Ejecutar servidor de desarrollo
+make run-server
+```
+
+#### Comandos Makefile disponibles:
+
+- `make help` - Muestra todos los comandos disponibles
+- `make install` - Instala las dependencias de Python
+- `make setup-db` - Configura la base de datos con datos dummy
+- `make reset-db` - Reinicia la base de datos con datos frescos
+- `make run-server` - Inicia el servidor de desarrollo
+- `make create-superuser` - Crea un superusuario para el admin
+- `make clean` - Limpia archivos temporales
+- `make clean-db` - Limpia datos de la base de datos (mantiene estructura)
+- `make drop-tables` - Borra todas las tablas completamente
+
+#### Instalación de Make:
+
+**Windows:**
+
+```bash
+# Con winget (Gestor de paquetes oficial de Microsoft)
+winget install --id GnuWin32.Make -e
+
+# Con Chocolatey
+choco install make
+
+# O usar Git Bash (viene con Git)
+```
+
+> **⚠️ Nota importante para winget:** Después de instalar con winget, es posible que necesites agregar `make.exe` al PATH manualmente:
+>
+> 1. Busca la ubicación de instalación (generalmente `C:\Program Files (x86)\GnuWin32\bin\`)
+> 2. Agrega esta ruta a las variables de entorno del sistema:
+>    - Abre "Variables de entorno del sistema"
+>    - Edita la variable `Path`
+>    - Agrega la ruta `C:\Program Files (x86)\GnuWin32\bin\`
+>    - Reinicia tu terminal
+> 3. Verifica la instalación con: `make --version`
+
+**Linux/Mac:**
+
+```bash
+# Ubuntu/Debian
+sudo apt install make
+
+# macOS
+brew install make
+```
+
+### Método 2: Instalación manual
+
 ### 1. Clonar el repositorio
 
 ```bash
@@ -88,6 +154,43 @@ python manage.py createsuperuser
 
 ## 🚀 Uso
 
+### Inicio rápido con Makefile
+
+```bash
+# Configurar todo desde cero
+make all-setup
+
+# Crear superusuario
+make create-superuser
+
+# Iniciar servidor
+make run-server
+```
+
+### Desarrollo diario
+
+```bash
+# Reiniciar base de datos con datos frescos
+make reset-db
+
+# Limpiar solo datos (mantener estructura de tablas)
+make clean-db
+
+# Borrar todas las tablas completamente
+make drop-tables
+
+# Ejecutar servidor
+make run-server
+
+# Ejecutar tests
+make test
+
+# Limpiar archivos temporales
+make clean
+```
+
+### Desarrollo manual
+
 ### Desarrollo
 
 Para ejecutar el servidor de desarrollo:
@@ -104,10 +207,68 @@ Accede al panel de administración en: `http://localhost:8000/admin/`
 
 ### API Endpoints
 
-La documentación de la API estará disponible en:
+La API y dashboard están disponibles en:
 
-- `http://localhost:8000/api/` - Endpoints principales
-- `http://localhost:8000/admin/` - Panel de administración
+- **Dashboard Web:** `http://localhost:8000/` - Vista web con todas las tablas
+- **Panel de administración:** `http://localhost:8000/admin/` - Admin de Django
+- **API Usuarios:** `http://localhost:8000/api/users/` - JSON con usuarios
+- **API Plazas:** `http://localhost:8000/api/plazas/` - JSON con plazas
+- **API Órdenes:** `http://localhost:8000/api/work-orders/` - JSON con órdenes
+- **API Completa:** `http://localhost:8000/api/dashboard/` - JSON con todos los datos
+
+### Datos de prueba
+
+El proyecto incluye datos dummy que se insertan automáticamente con:
+
+```bash
+make setup-db
+# o manualmente:
+python manage.py run_sql --file=insert_dummy_data.sql
+```
+
+Incluye:
+
+- 4 permisos y 2 roles
+- 3 plazas en diferentes estados
+- 3 estaciones de servicio (EDS)
+- 4 usuarios con diferentes roles
+- 3 preguntas de formulario
+- 4 órdenes de trabajo con diferentes estados
+
+### Gestión de base de datos
+
+#### Comandos de limpieza disponibles:
+
+```bash
+# Limpiar solo los datos (mantiene estructura de tablas)
+make clean-db
+
+# Borrar todas las tablas completamente
+make drop-tables
+
+# Reiniciar con datos frescos (limpia + recrea + inserta datos)
+make reset-db
+```
+
+#### Flujo de trabajo recomendado:
+
+```bash
+# Para desarrollo normal - limpiar datos y recargar:
+make reset-db
+
+# Para limpiar solo datos sin recargar:
+make clean-db
+
+# Para empezar completamente desde cero:
+make drop-tables
+make setup-db
+
+# Para recrear estructura después de cambios en modelos:
+make drop-tables
+python manage.py makemigrations
+python manage.py migrate
+make setup-db
+```
 
 ## 📁 Estructura del proyecto
 
@@ -115,8 +276,15 @@ La documentación de la API estará disponible en:
 hades-backend/
 ├── manage.py                 # Comando principal de Django
 ├── requirements.txt          # Dependencias del proyecto
+├── Makefile                 # Comandos automatizados
+├── setup.bat                # Script batch para Windows
 ├── .env.example             # Ejemplo de variables de entorno
 ├── README.md                # Este archivo
+├── sql/                     # Scripts SQL
+│   ├── create_tables.sql    # Creación de tablas
+│   ├── insert_dummy_data.sql # Datos de prueba
+│   ├── clean_database.sql   # Limpieza de datos (mantiene tablas)
+│   └── drop_tables.sql      # Eliminación completa de tablas
 ├── server/                  # Configuración del proyecto Django
 │   ├── __init__.py
 │   ├── settings.py          # Configuración principal
@@ -127,9 +295,13 @@ hades-backend/
     ├── __init__.py
     ├── models.py           # Modelos de datos
     ├── views.py            # Vistas/endpoints
-    ├── serializers.py      # Serializadores (crear)
-    ├── urls.py             # URLs de la app (crear)
-    └── admin.py            # Configuración admin
+    ├── urls.py             # URLs de la app
+    ├── admin.py            # Configuración admin
+    ├── templates/          # Plantillas HTML
+    │   └── dashboard.html  # Dashboard web
+    └── management/         # Comandos personalizados
+        └── commands/
+            └── run_sql.py  # Comando para ejecutar SQL
 ```
 
 ## 🔧 Configuración
