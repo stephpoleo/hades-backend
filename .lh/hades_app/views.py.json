@@ -1,0 +1,22 @@
+{
+    "sourceFile": "hades_app/views.py",
+    "activeCommit": 0,
+    "commits": [
+        {
+            "activePatchIndex": 1,
+            "patches": [
+                {
+                    "date": 1754598556381,
+                    "content": "Index: \n===================================================================\n--- \n+++ \n"
+                },
+                {
+                    "date": 1754598697786,
+                    "content": "Index: \n===================================================================\n--- \n+++ \n@@ -0,0 +1,88 @@\n+from rest_framework.views import APIView\r\n+from rest_framework.response import Response\r\n+from rest_framework import status\r\n+from django.utils.decorators import method_decorator\r\n+from django.views.decorators.csrf import csrf_exempt\r\n+from .migrations.models import EDS\r\n+from rest_framework import serializers\r\n+\r\n+class EDSSerializer(serializers.ModelSerializer):\r\n+    class Meta:\r\n+        model = EDS\r\n+        fields = '__all__'\r\n+\r\n+class EDSView(APIView):\r\n+    \"\"\"CRUD para EDS\"\"\"\r\n+\r\n+    @method_decorator(csrf_exempt)\r\n+    def dispatch(self, request, *args, **kwargs):\r\n+        return super().dispatch(request, *args, **kwargs)\r\n+\r\n+    def get(self, request, *args, **kwargs):\r\n+        try:\r\n+            id = request.query_params.get(\"id\")\r\n+            if id is not None:\r\n+                eds = EDS.objects.get(pk=id)\r\n+                serializer = EDSSerializer(eds)\r\n+                return Response(serializer.data, status=status.HTTP_200_OK)\r\n+        except Exception as e:\r\n+            if e.args and \"matching query does not exist\" in str(e):\r\n+                return Response(\r\n+                    {\"message\": \"Wrong EDS id or does not exist\"},\r\n+                    status=status.HTTP_400_BAD_REQUEST,\r\n+                )\r\n+            else:\r\n+                eds = EDS.objects.all()\r\n+                serializer = EDSSerializer(eds, many=True)\r\n+                if eds.exists():\r\n+                    return Response(serializer.data, status=status.HTTP_200_OK)\r\n+                else:\r\n+                    return Response(\r\n+                        {\"message\": \"EDS not found\"},\r\n+                        status=status.HTTP_200_OK,\r\n+                    )\r\n+\r\n+    def post(self, request):\r\n+        serializer = EDSSerializer(data=request.data)\r\n+        if serializer.is_valid():\r\n+            serializer.save()\r\n+            return Response(\r\n+                {\"message\": \"New EDS created\", \"data\": serializer.data},\r\n+                status=status.HTTP_201_CREATED,\r\n+            )\r\n+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)\r\n+\r\n+    def put(self, request):\r\n+        id = request.query_params.get(\"id\")\r\n+        try:\r\n+            eds_instance = EDS.objects.get(pk=id)\r\n+        except Exception:\r\n+            return Response(\r\n+                {\"message\": \"Wrong EDS id or does not exist\"},\r\n+                status=status.HTTP_400_BAD_REQUEST,\r\n+            )\r\n+\r\n+        serializer = EDSSerializer(eds_instance, data=request.data)\r\n+        if serializer.is_valid():\r\n+            serializer.save()\r\n+            return Response(\r\n+                {\"message\": \"EDS updated\", \"data\": serializer.data},\r\n+                status=status.HTTP_200_OK,\r\n+            )\r\n+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)\r\n+\r\n+    def delete(self, request):\r\n+        id = request.query_params.get(\"id\")\r\n+        try:\r\n+            eds_instance = EDS.objects.get(pk=id)\r\n+        except Exception:\r\n+            return Response(\r\n+                {\"message\": \"Wrong EDS id or does not exist\"},\r\n+                status=status.HTTP_400_BAD_REQUEST,\r\n+            )\r\n+\r\n+        eds_instance.delete()\r\n+        return Response(\r\n+            {\"message\": f\"EDS {id} was deleted\"},\r\n+            status=status.HTTP_204_NO_CONTENT,\r\n+        )\n\\ No newline at end of file\n"
+                }
+            ],
+            "date": 1754598556381,
+            "name": "Commit-0",
+            "content": ""
+        }
+    ]
+}

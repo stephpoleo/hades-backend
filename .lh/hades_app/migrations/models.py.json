@@ -1,0 +1,18 @@
+{
+    "sourceFile": "hades_app/migrations/models.py",
+    "activeCommit": 0,
+    "commits": [
+        {
+            "activePatchIndex": 0,
+            "patches": [
+                {
+                    "date": 1754596245689,
+                    "content": "Index: \n===================================================================\n--- \n+++ \n"
+                }
+            ],
+            "date": 1754596245689,
+            "name": "Commit-0",
+            "content": "from django.db import models\r\n\r\nclass EDS(models.Model):\r\n    id_eds_pk = models.AutoField(primary_key=True, unique=True)\r\n    name = models.CharField(max_length=65, null=True, blank=True)\r\n    plaza = models.CharField(max_length=20, null=True, blank=True)\r\n    state = models.CharField(max_length=20, null=True, blank=True)\r\n    municipality = models.CharField(max_length=35, null=True, blank=True)\r\n    zip_code = models.CharField(max_length=10, null=True, blank=True)\r\n    plaza_status = models.BooleanField(null=True, blank=True)\r\n    long_eds = models.DecimalField(max_digits=20, decimal_places=10, null=True, blank=True)\r\n    latit_eds = models.DecimalField(max_digits=20, decimal_places=10, null=True, blank=True)\r\n\r\n    class Meta:\r\n        db_table = 'EDS'"
+        }
+    ]
+}
