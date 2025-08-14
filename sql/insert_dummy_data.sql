@@ -11,7 +11,7 @@ INSERT INTO "Permissions" ("name", "permission_status") VALUES
 -- Insertar roles
 INSERT INTO "Roles" ("name", "id_permission_fk", "role_status") VALUES
 ('Administrador', 1, TRUE),
-('Operador', 2, TRUE);
+('Empleado', 2, TRUE);
 
 -- Insertar EDS (Estaciones de Servicio)
 INSERT INTO "EDS" ("name", "plaza", "state", "municipality", "zip_code", "plaza_status", "long_eds", "latit_eds") VALUES
