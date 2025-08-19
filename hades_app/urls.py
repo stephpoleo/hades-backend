@@ -5,6 +5,7 @@ from . import views
 # Router para API REST
 router = DefaultRouter()
 router.register(r'users', views.UsersViewSet)
+router.register(r'eds', views.EDSViewSet)
 
 urlpatterns = [
     # API REST endpoints

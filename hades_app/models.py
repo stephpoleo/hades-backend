@@ -29,8 +29,6 @@ class Users(models.Model):
 
     class Meta:
         db_table = 'Users'
-        verbose_name = 'Usuario'
-        verbose_name_plural = 'Usuarios'
 
     def __str__(self):
         return f"{self.name} ({self.email})"
