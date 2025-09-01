@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Users
+from .models import Users, EDS, FormTemplate, WorkOrder, FormQuestions, FormAnswers
 
 
 class UsersSerializer(serializers.ModelSerializer):
@@ -31,3 +31,42 @@ class UsersSerializer(serializers.ModelSerializer):
             user.set_password(password)
             user.save()
         return user
+
+
+class EDSSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EDS
+        fields = '__all__'
+
+
+class FormTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FormTemplate
+        fields = '__all__'
+
+
+class FormQuestionsSerializer(serializers.ModelSerializer):
+    template_name = serializers.CharField(source='id_form_template_fk.name', read_only=True)
+    
+    class Meta:
+        model = FormQuestions
+        fields = '__all__'
+
+
+class WorkOrderSerializer(serializers.ModelSerializer):
+    template_name = serializers.CharField(source='id_form_template_fk.name', read_only=True)
+    name = serializers.CharField(read_only=True)  # Propiedad calculada
+    description = serializers.CharField(read_only=True)  # Propiedad calculada
+    
+    class Meta:
+        model = WorkOrder
+        fields = '__all__'
+
+
+class FormAnswersSerializer(serializers.ModelSerializer):
+    question_text = serializers.CharField(source='id_question_form_fk.question', read_only=True)
+    work_order_name = serializers.CharField(source='work_order_id.name', read_only=True)
+    
+    class Meta:
+        model = FormAnswers
+        fields = '__all__'

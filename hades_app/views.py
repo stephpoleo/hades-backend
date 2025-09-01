@@ -2,16 +2,10 @@ from django.http import JsonResponse
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from rest_framework import serializers
 
-from .models import Users, EDS
-from .serializers import UsersSerializer
-
-# EDS Serializer
-class EDSSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = EDS
-        fields = '__all__'
+from .models import Users, EDS, FormTemplate, WorkOrder, FormQuestions, FormAnswers
+from .serializers import (UsersSerializer, EDSSerializer, FormTemplateSerializer, 
+                         WorkOrderSerializer, FormQuestionsSerializer, FormAnswersSerializer)
 
 # EDS ViewSet - Standardized CRUD
 class EDSViewSet(viewsets.ModelViewSet):
@@ -434,3 +428,31 @@ def users_list(request):
             'role': user.role_name,
         })
     return JsonResponse(data, safe=False)
+
+
+# FormTemplate ViewSet
+class FormTemplateViewSet(viewsets.ModelViewSet):
+    """API para gestionar plantillas de formularios"""
+    queryset = FormTemplate.objects.all()
+    serializer_class = FormTemplateSerializer
+
+
+# WorkOrder ViewSet
+class WorkOrderViewSet(viewsets.ModelViewSet):
+    """API para gestionar órdenes de trabajo"""
+    queryset = WorkOrder.objects.all()
+    serializer_class = WorkOrderSerializer
+
+
+# FormQuestions ViewSet
+class FormQuestionsViewSet(viewsets.ModelViewSet):
+    """API para gestionar preguntas de formularios"""
+    queryset = FormQuestions.objects.all()
+    serializer_class = FormQuestionsSerializer
+
+
+# FormAnswers ViewSet
+class FormAnswersViewSet(viewsets.ModelViewSet):
+    """API para gestionar respuestas de formularios"""
+    queryset = FormAnswers.objects.all()
+    serializer_class = FormAnswersSerializer

@@ -6,6 +6,10 @@ from . import views
 router = DefaultRouter()
 router.register(r'users', views.UsersViewSet)
 router.register(r'eds', views.EDSViewSet)
+router.register(r'form-templates', views.FormTemplateViewSet)
+router.register(r'work-orders', views.WorkOrderViewSet)
+router.register(r'form-questions', views.FormQuestionsViewSet)
+router.register(r'form-answers', views.FormAnswersViewSet)
 
 urlpatterns = [
     # API REST endpoints
