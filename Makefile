@@ -42,11 +42,8 @@ setup-db: check-venv
 	@echo "Configurando la base de datos..."
 	@call $(VENV_SCRIPTS)\activate.bat & $(PYTHON) manage.py makemigrations
 	@call $(VENV_SCRIPTS)\activate.bat & $(PYTHON) manage.py migrate
-	@echo "Ejecutando script de creación de tablas..."
-	@call $(VENV_SCRIPTS)\activate.bat & $(PYTHON) manage.py run_sql --file=create_tables.sql
 	@echo "Insertando datos dummy..."
 	@call $(VENV_SCRIPTS)\activate.bat & $(PYTHON) manage.py run_sql --file=insert_dummy_data.sql
-	@echo "Base de datos configurada correctamente."
 
 # Limpiar base de datos completamente
 clean-db: check-venv
@@ -64,10 +61,9 @@ drop-tables: check-venv
 reset-db: check-venv
 	@echo "Reiniciando la base de datos..."
 	@call $(VENV_SCRIPTS)\activate.bat & $(PYTHON) manage.py flush --noinput
-	@echo "Ejecutando script de creación de tablas..."
-	@call $(VENV_SCRIPTS)\activate.bat & $(PYTHON) manage.py run_sql --file=create_tables.sql
+	@call $(VENV_SCRIPTS)\activate.bat & $(PYTHON) manage.py migrate
 	@echo "Insertando datos dummy..."
-	@call $(VENV_SCRIPTS)\activate.bat & $(PYTHON) manage.py run_sql --file=insert_dummy_data.sql
+	@call $(VENV_SCRIPTS)\activate.bat & $(PYTHON) manage.py run_sql --file=insert_dummy_data_clean.sql
 	@echo "Base de datos reiniciada correctamente."
 
 # Crear superusuario
