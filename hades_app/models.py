@@ -148,3 +148,34 @@ class FormAnswers(models.Model):
 
     def __str__(self):
         return f"WO-{self.work_order_id.id}: {self.id_question_form_fk.question[:30]}..."
+
+class Roles(models.Model):
+    id_rol_pk = models.AutoField(primary_key=True, unique=True)
+    name = models.CharField(max_length=20, null=True, blank=True)
+    created_at = models.DateField(null=True, blank=True)
+    updated_at = models.DateField(null=True, blank=True)
+    usr_created_at = models.CharField(max_length=65, null=True, blank=True)
+    usr_updated_at = models.CharField(max_length=65, null=True, blank=True)
+    id_permission_fk = models.IntegerField(null=True, blank=True)  # Referencia a Permissions
+    role_status = models.BooleanField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'Roles'
+
+    def __str__(self):
+        return self.name if self.name else f"Rol {self.id_rol_pk}"
+
+class Permissions(models.Model):
+    id_permissions_pk = models.AutoField(primary_key=True, unique=True)
+    name = models.CharField(max_length=20, null=True, blank=True)
+    created_at = models.DateField(null=True, blank=True)
+    updated_at = models.DateField(null=True, blank=True)
+    usr_created_at = models.CharField(max_length=65, null=True, blank=True)
+    usr_updated_at = models.CharField(max_length=65, null=True, blank=True)
+    permission_status = models.BooleanField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'Permissions'
+
+    def __str__(self):
+        return self.name if self.name else f"Permiso {self.id_permissions_pk}"

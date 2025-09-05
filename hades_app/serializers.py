@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Users, EDS, FormTemplate, WorkOrder, FormQuestions, FormAnswers
+from .models import Users, EDS, FormTemplate, WorkOrder, FormQuestions, FormAnswers, Roles, Permissions
 
 
 class UsersSerializer(serializers.ModelSerializer):
@@ -69,4 +69,16 @@ class FormAnswersSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = FormAnswers
+        fields = '__all__'
+
+
+class RolesSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Roles
+        fields = '__all__'
+
+
+class PermissionsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Permissions
         fields = '__all__'
