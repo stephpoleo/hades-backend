@@ -14,7 +14,4 @@ router.register(r'form-answers', views.FormAnswersViewSet)
 urlpatterns = [
     # API REST endpoints
     path('api/', include(router.urls)),
-    
-    # API endpoint específico para listar usuarios
-    path('api/users-list/', views.users_list, name='users-list'),
 ]
