@@ -125,7 +125,7 @@ class EDSViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def list(self, request, *args, **kwargs):
-        """Listar EDS con mensaje"""
+        """Listar EDS con mensaje (incluyendo longitud y latitud)"""
         try:
             queryset = self.filter_queryset(self.get_queryset())
             page = self.paginate_queryset(queryset)
@@ -141,15 +141,15 @@ class EDSViewSet(viewsets.ModelViewSet):
                         'plaza': eds.plaza,
                         'state': eds.state,
                         'municipality': eds.municipality,
-                        'status': eds.plaza_status
+                        'status': eds.plaza_status,
+                        'longitude': str(eds.long_eds) if eds.long_eds else None,
+                        'latitude': str(eds.latit_eds) if eds.latit_eds else None
                     })
-                
                 return self.get_paginated_response({
                     'success': True,
                     'message': f'{len(eds_data)} EDS encontradas',
                     'eds_list': eds_data
                 })
-            
             serializer = self.get_serializer(queryset, many=True)
             eds_data = []
             for eds_item in serializer.data:
@@ -160,15 +160,15 @@ class EDSViewSet(viewsets.ModelViewSet):
                     'plaza': eds.plaza,
                     'state': eds.state,
                     'municipality': eds.municipality,
-                    'status': eds.plaza_status
+                    'status': eds.plaza_status,
+                    'longitude': str(eds.long_eds) if eds.long_eds else None,
+                    'latitude': str(eds.latit_eds) if eds.latit_eds else None
                 })
-            
             return Response({
                 'success': True,
                 'message': f'{len(eds_data)} EDS encontradas',
                 'eds_list': eds_data
             }, status=status.HTTP_200_OK)
-            
         except Exception as e:
             return Response({
                 'success': False,
@@ -212,7 +212,7 @@ class EDSViewSet(viewsets.ModelViewSet):
 # Users Views
 class UsersViewSet(viewsets.ModelViewSet):
     """API para gestionar usuarios"""
-    queryset = Users.objects.filter(usr_status=True)  # Solo usuarios activos
+    queryset = Users.objects.all()
     serializer_class = UsersSerializer
     
     def create(self, request, *args, **kwargs):
@@ -264,7 +264,8 @@ class UsersViewSet(viewsets.ModelViewSet):
                     'name': instance.name,
                     'email': instance.email,
                     'role': instance.role_name,
-                    'status': instance.usr_status
+                    'status': instance.usr_status,
+                    'eds_info': serializer.data.get('eds_info')
                 }
             }, status=status.HTTP_200_OK)
             
@@ -330,48 +331,25 @@ class UsersViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def list(self, request, *args, **kwargs):
-        """Listar usuarios con mensaje"""
+        """Listar usuarios con mensaje y todos los campos del serializer (incluyendo eds_info)"""
         try:
             queryset = self.filter_queryset(self.get_queryset())
             page = self.paginate_queryset(queryset)
-            
+
             if page is not None:
                 serializer = self.get_serializer(page, many=True)
-                users_data = []
-                for user_data in serializer.data:
-                    user = Users.objects.get(id_usr_pk=user_data['id_usr_pk'])
-                    users_data.append({
-                        'id': user.id_usr_pk,
-                        'name': user.name,
-                        'email': user.email,
-                        'role': user.role_name,
-                        'status': user.usr_status
-                    })
-                
                 return self.get_paginated_response({
                     'success': True,
-                    'message': f'{len(users_data)} usuarios encontrados',
-                    'users': users_data
+                    'message': f'{len(serializer.data)} usuarios encontrados',
+                    'users': serializer.data
                 })
-            
+
             serializer = self.get_serializer(queryset, many=True)
-            users_data = []
-            for user_data in serializer.data:
-                user = Users.objects.get(id_usr_pk=user_data['id_usr_pk'])
-                users_data.append({
-                    'id': user.id_usr_pk,
-                    'name': user.name,
-                    'email': user.email,
-                    'role': user.role_name,
-                    'status': user.usr_status
-                })
-            
             return Response({
                 'success': True,
-                'message': f'{len(users_data)} usuarios encontrados',
-                'users': users_data
+                'message': f'{len(serializer.data)} usuarios encontrados',
+                'users': serializer.data
             }, status=status.HTTP_200_OK)
-            
         except Exception as e:
             return Response({
                 'success': False,
@@ -411,23 +389,6 @@ class UsersViewSet(viewsets.ModelViewSet):
                 'error': 'Error al eliminar usuario',
                 'message': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-# API endpoints específicos
-@api_view(['GET'])
-def users_list(request):
-    """API endpoint para listar usuarios"""
-    users = Users.objects.all()
-    data = []
-    for user in users:
-        data.append({
-            'id': user.id_usr_pk,
-            'name': user.name,
-            'email': user.email,
-            'status': user.usr_status,
-            'role': user.role_name,
-        })
-    return JsonResponse(data, safe=False)
 
 
 # FormTemplate ViewSet
