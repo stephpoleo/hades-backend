@@ -10,6 +10,8 @@ router.register(r'form-templates', views.FormTemplateViewSet)
 router.register(r'work-orders', views.WorkOrderViewSet)
 router.register(r'form-questions', views.FormQuestionsViewSet)
 router.register(r'form-answers', views.FormAnswersViewSet)
+router.register(r'roles', views.RolesViewSet)
+router.register(r'permissions', views.PermissionsViewSet)
 
 urlpatterns = [
     # API REST endpoints

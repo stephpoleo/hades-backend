@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Users, EDS, FormTemplate, WorkOrder, FormQuestions, FormAnswers
+from .models import Users, EDS, FormTemplate, WorkOrder, FormQuestions, FormAnswers, Roles, Permissions
 
 
 class UsersSerializer(serializers.ModelSerializer):
@@ -156,3 +156,14 @@ class FormAnswersSerializer(serializers.ModelSerializer):
         rep['question_id'] = instance.question.id if instance.question else None
         rep['work_order_id'] = instance.work_order.id if instance.work_order else None
         return rep
+
+# === INTEGRACIÓN DE SERIALIZERS DE ROLES Y PERMISOS ===
+class RolesSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Roles
+        fields = '__all__'
+
+class PermissionsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Permissions
+        fields = '__all__'
