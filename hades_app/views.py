@@ -1,9 +1,10 @@
 from django.http import JsonResponse
 from rest_framework import viewsets, status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, action
 from rest_framework.response import Response
 
 from .models import Users, EDS, FormTemplate, WorkOrder, FormQuestions, FormAnswers
+from django.db.models import Count, Max
 from .serializers import (UsersSerializer, EDSSerializer, FormTemplateSerializer, 
                          WorkOrderSerializer, FormQuestionsSerializer, FormAnswersSerializer)
 
@@ -414,6 +415,66 @@ class FormQuestionsViewSet(viewsets.ModelViewSet):
 
 # FormAnswers ViewSet
 class FormAnswersViewSet(viewsets.ModelViewSet):
+    @action(detail=False, methods=['get'], url_path='by-workorder')
+    def by_workorder(self, request):
+        """
+        Devuelve todas las respuestas para un work_order_id dado.
+        Uso: /api/form-answers/by-workorder/?work_order_id=1
+        """
+        work_order_id = request.query_params.get('work_order_id')
+        if not work_order_id:
+            return Response({'detail': 'work_order_id es requerido como parámetro.'}, status=400)
+        queryset = self.get_queryset().filter(work_order_id=work_order_id)
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+    from rest_framework.decorators import action
+    from django.db.models import Count, Max
+
+    @action(detail=False, methods=['delete'], url_path='delete-duplicates')
+    def delete_duplicates(self, request):
+        """
+        Elimina respuestas duplicadas por (question_id, work_order_id), dejando solo la más reciente (mayor id).
+        """
+        # Agrupa por question_id y work_order_id, cuenta y obtiene el id máximo (más reciente)
+        duplicates = (
+            FormAnswers.objects.values('question_id', 'work_order_id')
+            .annotate(count=Count('id'), max_id=Max('id'))
+            .filter(count__gt=1)
+        )
+        total_deleted = 0
+        for dup in duplicates:
+            # Obtiene todos los ids menos el más reciente
+            to_delete = (
+                FormAnswers.objects
+                .filter(question_id=dup['question_id'], work_order_id=dup['work_order_id'])
+                .exclude(id=dup['max_id'])
+            )
+            deleted, _ = to_delete.delete()
+            total_deleted += deleted
+        return Response({'deleted': total_deleted, 'message': 'Respuestas duplicadas eliminadas.'})
     """API para gestionar respuestas de formularios"""
     queryset = FormAnswers.objects.all()
     serializer_class = FormAnswersSerializer
+
+    def create(self, request, *args, **kwargs):
+        # Extrae los IDs de pregunta y work_order del request
+        question_id = request.data.get('question_id')
+        work_order_id = request.data.get('work_order_id')
+        if not question_id or not work_order_id:
+            return Response({'detail': 'question_id y work_order_id son requeridos.'}, status=400)
+
+        # Busca si ya existe una respuesta para esa combinación
+        instance = FormAnswers.objects.filter(question_id=question_id, work_order_id=work_order_id).first()
+        if instance:
+            # Si existe, actualiza el registro existente
+            serializer = self.get_serializer(instance, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            self.perform_update(serializer)
+            return Response(serializer.data, status=200)
+        else:
+            # Si no existe, crea uno nuevo
+            return super().create(request, *args, **kwargs)

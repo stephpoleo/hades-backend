@@ -124,11 +124,35 @@ class WorkOrderSerializer(serializers.ModelSerializer):
 
 class FormAnswersSerializer(serializers.ModelSerializer):
     question = FormQuestionsSerializer(read_only=True)
+    question_id = serializers.PrimaryKeyRelatedField(
+        queryset=FormQuestions.objects.all(), source='question', write_only=True, required=True
+    )
+    work_order = serializers.SerializerMethodField(read_only=True)
+    work_order_id = serializers.PrimaryKeyRelatedField(
+        queryset=WorkOrder.objects.all(), source='work_order', write_only=True, required=True
+    )
     work_order_name = serializers.SerializerMethodField(read_only=True)
+    image = serializers.ImageField(required=False, allow_null=True)
+
+    def get_work_order(self, obj):
+        return obj.work_order.id if obj.work_order else None
 
     def get_work_order_name(self, obj):
         return str(obj.work_order) if obj.work_order else None
 
     class Meta:
         model = FormAnswers
-        fields = '__all__'
+        fields = [
+            'id', 'question', 'question_id', 'work_order', 'work_order_id', 'work_order_name',
+            'answer', 'area', 'comments', 'image'
+        ]
+        extra_kwargs = {
+            'question': {'required': False},
+            'work_order': {'required': False},
+        }
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        rep['question_id'] = instance.question.id if instance.question else None
+        rep['work_order_id'] = instance.work_order.id if instance.work_order else None
+        return rep

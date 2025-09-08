@@ -140,7 +140,7 @@ class FormAnswers(models.Model):
     answer = models.TextField(blank=True, null=True, help_text="Respuesta a la pregunta")
     area = models.CharField(max_length=100, blank=True, null=True, help_text="Área específica del trabajo")
     comments = models.TextField(blank=True, null=True, help_text="Comentarios adicionales")
-    image = models.CharField(max_length=255, blank=True, null=True, help_text="Nombre del archivo de imagen")
+    image = models.ImageField(upload_to='form_answers/', blank=True, null=True, help_text="Archivo de imagen de la respuesta")
 
     class Meta:
         db_table = 'FormAnswers'
