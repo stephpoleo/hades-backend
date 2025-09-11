@@ -42,11 +42,13 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'corsheaders',
     'hades_app',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -134,12 +136,56 @@ REST_FRAMEWORK = {
 }
 
 
+
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
-
 STATIC_URL = 'static/'
+
+# Media files (uploads)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# ============================================================================
+# CORS SETTINGS FOR ANGULAR FRONTEND
+# ============================================================================
+
+# Permitir CORS desde localhost Angular (desarrollo)
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:4200",  # Angular dev server default
+    "http://127.0.0.1:4200",
+    "http://localhost:3000",  # Por si usas otro puerto
+]
+
+# En desarrollo, puedes usar esto para permitir cualquier origen (NO usar en producción)
+# CORS_ALLOW_ALL_ORIGINS = True
+
+# Permitir cookies y headers de autenticación
+CORS_ALLOW_CREDENTIALS = True
+
+# Headers permitidos para Angular
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
+
+# Métodos HTTP permitidos
+CORS_ALLOWED_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+]

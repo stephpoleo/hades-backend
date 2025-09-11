@@ -1,11 +1,12 @@
 from django.http import JsonResponse
 from rest_framework import viewsets, status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, action
 from rest_framework.response import Response
 
-from .models import Users, EDS, FormTemplate, WorkOrder, FormQuestions, FormAnswers
+from .models import Users, EDS, FormTemplate, WorkOrder, FormQuestions, FormAnswers, Permissions, Roles
+from django.db.models import Count, Max
 from .serializers import (UsersSerializer, EDSSerializer, FormTemplateSerializer, 
-                         WorkOrderSerializer, FormQuestionsSerializer, FormAnswersSerializer)
+                         WorkOrderSerializer, FormQuestionsSerializer, FormAnswersSerializer, PermissionsSerializer, RolesSerializer)
 
 # EDS ViewSet - Standardized CRUD
 class EDSViewSet(viewsets.ModelViewSet):
@@ -125,7 +126,7 @@ class EDSViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def list(self, request, *args, **kwargs):
-        """Listar EDS con mensaje"""
+        """Listar EDS con mensaje (incluyendo longitud y latitud)"""
         try:
             queryset = self.filter_queryset(self.get_queryset())
             page = self.paginate_queryset(queryset)
@@ -141,15 +142,15 @@ class EDSViewSet(viewsets.ModelViewSet):
                         'plaza': eds.plaza,
                         'state': eds.state,
                         'municipality': eds.municipality,
-                        'status': eds.plaza_status
+                        'status': eds.plaza_status,
+                        'longitude': str(eds.long_eds) if eds.long_eds else None,
+                        'latitude': str(eds.latit_eds) if eds.latit_eds else None
                     })
-                
                 return self.get_paginated_response({
                     'success': True,
                     'message': f'{len(eds_data)} EDS encontradas',
                     'eds_list': eds_data
                 })
-            
             serializer = self.get_serializer(queryset, many=True)
             eds_data = []
             for eds_item in serializer.data:
@@ -160,15 +161,15 @@ class EDSViewSet(viewsets.ModelViewSet):
                     'plaza': eds.plaza,
                     'state': eds.state,
                     'municipality': eds.municipality,
-                    'status': eds.plaza_status
+                    'status': eds.plaza_status,
+                    'longitude': str(eds.long_eds) if eds.long_eds else None,
+                    'latitude': str(eds.latit_eds) if eds.latit_eds else None
                 })
-            
             return Response({
                 'success': True,
                 'message': f'{len(eds_data)} EDS encontradas',
                 'eds_list': eds_data
             }, status=status.HTTP_200_OK)
-            
         except Exception as e:
             return Response({
                 'success': False,
@@ -212,7 +213,7 @@ class EDSViewSet(viewsets.ModelViewSet):
 # Users Views
 class UsersViewSet(viewsets.ModelViewSet):
     """API para gestionar usuarios"""
-    queryset = Users.objects.filter(usr_status=True)  # Solo usuarios activos
+    queryset = Users.objects.all()
     serializer_class = UsersSerializer
     
     def create(self, request, *args, **kwargs):
@@ -264,7 +265,8 @@ class UsersViewSet(viewsets.ModelViewSet):
                     'name': instance.name,
                     'email': instance.email,
                     'role': instance.role_name,
-                    'status': instance.usr_status
+                    'status': instance.usr_status,
+                    'eds_info': serializer.data.get('eds_info')
                 }
             }, status=status.HTTP_200_OK)
             
@@ -330,48 +332,25 @@ class UsersViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def list(self, request, *args, **kwargs):
-        """Listar usuarios con mensaje"""
+        """Listar usuarios con mensaje y todos los campos del serializer (incluyendo eds_info)"""
         try:
             queryset = self.filter_queryset(self.get_queryset())
             page = self.paginate_queryset(queryset)
-            
+
             if page is not None:
                 serializer = self.get_serializer(page, many=True)
-                users_data = []
-                for user_data in serializer.data:
-                    user = Users.objects.get(id_usr_pk=user_data['id_usr_pk'])
-                    users_data.append({
-                        'id': user.id_usr_pk,
-                        'name': user.name,
-                        'email': user.email,
-                        'role': user.role_name,
-                        'status': user.usr_status
-                    })
-                
                 return self.get_paginated_response({
                     'success': True,
-                    'message': f'{len(users_data)} usuarios encontrados',
-                    'users': users_data
+                    'message': f'{len(serializer.data)} usuarios encontrados',
+                    'users': serializer.data
                 })
-            
+
             serializer = self.get_serializer(queryset, many=True)
-            users_data = []
-            for user_data in serializer.data:
-                user = Users.objects.get(id_usr_pk=user_data['id_usr_pk'])
-                users_data.append({
-                    'id': user.id_usr_pk,
-                    'name': user.name,
-                    'email': user.email,
-                    'role': user.role_name,
-                    'status': user.usr_status
-                })
-            
             return Response({
                 'success': True,
-                'message': f'{len(users_data)} usuarios encontrados',
-                'users': users_data
+                'message': f'{len(serializer.data)} usuarios encontrados',
+                'users': serializer.data
             }, status=status.HTTP_200_OK)
-            
         except Exception as e:
             return Response({
                 'success': False,
@@ -413,23 +392,6 @@ class UsersViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# API endpoints específicos
-@api_view(['GET'])
-def users_list(request):
-    """API endpoint para listar usuarios"""
-    users = Users.objects.all()
-    data = []
-    for user in users:
-        data.append({
-            'id': user.id_usr_pk,
-            'name': user.name,
-            'email': user.email,
-            'status': user.usr_status,
-            'role': user.role_name,
-        })
-    return JsonResponse(data, safe=False)
-
-
 # FormTemplate ViewSet
 class FormTemplateViewSet(viewsets.ModelViewSet):
     """API para gestionar plantillas de formularios"""
@@ -453,6 +415,457 @@ class FormQuestionsViewSet(viewsets.ModelViewSet):
 
 # FormAnswers ViewSet
 class FormAnswersViewSet(viewsets.ModelViewSet):
+    @action(detail=False, methods=['get'], url_path='by-workorder')
+    def by_workorder(self, request):
+        """
+        Devuelve todas las respuestas para un work_order_id dado.
+        Uso: /api/form-answers/by-workorder/?work_order_id=1
+        """
+        work_order_id = request.query_params.get('work_order_id')
+        if not work_order_id:
+            return Response({'detail': 'work_order_id es requerido como parámetro.'}, status=400)
+        queryset = self.get_queryset().filter(work_order_id=work_order_id)
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+    from rest_framework.decorators import action
+    from django.db.models import Count, Max
+
+    @action(detail=False, methods=['delete'], url_path='delete-duplicates')
+    def delete_duplicates(self, request):
+        """
+        Elimina respuestas duplicadas por (question_id, work_order_id), dejando solo la más reciente (mayor id).
+        """
+        # Agrupa por question_id y work_order_id, cuenta y obtiene el id máximo (más reciente)
+        duplicates = (
+            FormAnswers.objects.values('question_id', 'work_order_id')
+            .annotate(count=Count('id'), max_id=Max('id'))
+            .filter(count__gt=1)
+        )
+        total_deleted = 0
+        for dup in duplicates:
+            # Obtiene todos los ids menos el más reciente
+            to_delete = (
+                FormAnswers.objects
+                .filter(question_id=dup['question_id'], work_order_id=dup['work_order_id'])
+                .exclude(id=dup['max_id'])
+            )
+            deleted, _ = to_delete.delete()
+            total_deleted += deleted
+        return Response({'deleted': total_deleted, 'message': 'Respuestas duplicadas eliminadas.'})
     """API para gestionar respuestas de formularios"""
     queryset = FormAnswers.objects.all()
     serializer_class = FormAnswersSerializer
+
+    def create(self, request, *args, **kwargs):
+        # Extrae los IDs de pregunta y work_order del request
+        question_id = request.data.get('question_id')
+        work_order_id = request.data.get('work_order_id')
+        if not question_id or not work_order_id:
+            return Response({'detail': 'question_id y work_order_id son requeridos.'}, status=400)
+
+        # Busca si ya existe una respuesta para esa combinación
+        instance = FormAnswers.objects.filter(question_id=question_id, work_order_id=work_order_id).first()
+        if instance:
+            # Si existe, actualiza el registro existente
+            serializer = self.get_serializer(instance, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            self.perform_update(serializer)
+            return Response(serializer.data, status=200)
+        else:
+            # Si no existe, crea uno nuevo
+            return super().create(request, *args, **kwargs)
+
+# === INTEGRACIÓN DE VIEWSETS DE ROLES Y PERMISOS ===
+class RolesViewSet(viewsets.ModelViewSet):
+    """API para gestionar roles"""
+    queryset = Roles.objects.all()
+    serializer_class = RolesSerializer
+
+    def create(self, request, *args, **kwargs):
+        try:
+            serializer = self.get_serializer(data=request.data)
+            if serializer.is_valid():
+                role = serializer.save()
+                return Response({
+                    'success': True,
+                    'message': f'Rol "{role.name}" creado exitosamente',
+                    'role': RolesSerializer(role).data
+                }, status=status.HTTP_201_CREATED)
+            else:
+                return Response({
+                    'success': False,
+                    'error': 'Datos de rol inválidos',
+                    'details': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': 'Error al crear rol',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class PermissionsViewSet(viewsets.ModelViewSet):
+    """API para gestionar permisos"""
+    queryset = Permissions.objects.all()
+    serializer_class = PermissionsSerializer
+
+    def create(self, request, *args, **kwargs):
+        try:
+            serializer = self.get_serializer(data=request.data)
+            if serializer.is_valid():
+                permission = serializer.save()
+                return Response({
+                    'success': True,
+                    'message': f'Permiso "{permission.name}" creado exitosamente',
+                    'permission': PermissionsSerializer(permission).data
+                }, status=status.HTTP_201_CREATED)
+            else:
+                return Response({
+                    'success': False,
+                    'error': 'Datos de permiso inválidos',
+                    'details': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': 'Error al crear permiso',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# Roles ViewSet
+class RolesViewSet(viewsets.ModelViewSet):
+    """API para gestionar roles"""
+    queryset = Roles.objects.all()
+    serializer_class = RolesSerializer
+
+    def create(self, request, *args, **kwargs):
+        """Crear nuevo rol con mensaje de confirmación"""
+        try:
+            serializer = self.get_serializer(data=request.data)
+            if serializer.is_valid():
+                role = serializer.save()
+                return Response({
+                    'success': True,
+                    'message': f'Rol "{role.name}" creado exitosamente',
+                    'role': {
+                        'id': role.id_rol_pk,
+                        'name': role.name,
+                        'status': role.role_status
+                    }
+                }, status=status.HTTP_201_CREATED)
+            else:
+                return Response({
+                    'success': False,
+                    'error': 'Datos de rol inválidos',
+                    'message': 'Por favor verifica los campos requeridos',
+                    'details': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': 'Error al crear rol',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def retrieve(self, request, *args, **kwargs):
+        """Obtener un rol específico con mensaje"""
+        try:
+            instance = self.get_object()
+            return Response({
+                'success': True,
+                'message': f'Rol "{instance.name}" encontrado',
+                'role': {
+                    'id': instance.id_rol_pk,
+                    'name': instance.name,
+                    'status': instance.role_status
+                }
+            }, status=status.HTTP_200_OK)
+        except Roles.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Rol no encontrado',
+                'message': 'El rol solicitado no existe'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': 'Error al obtener rol',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def update(self, request, *args, **kwargs):
+        """Actualizar rol con mensaje de confirmación"""
+        try:
+            instance = self.get_object()
+            old_name = instance.name
+            serializer = self.get_serializer(instance, data=request.data, partial=True)
+            if serializer.is_valid():
+                role = serializer.save()
+                return Response({
+                    'success': True,
+                    'message': f'Rol "{old_name}" actualizado exitosamente',
+                    'role': {
+                        'id': role.id_rol_pk,
+                        'name': role.name,
+                        'status': role.role_status
+                    }
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'success': False,
+                    'error': 'Datos de actualización inválidos',
+                    'message': 'Por favor verifica los campos a actualizar',
+                    'details': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+        except Roles.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Rol no encontrado',
+                'message': 'El rol que intentas actualizar no existe'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': 'Error al actualizar rol',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def list(self, request, *args, **kwargs):
+        """Listar roles con mensaje"""
+        try:
+            queryset = self.filter_queryset(self.get_queryset())
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                roles_data = []
+                for role_item in serializer.data:
+                    role = Roles.objects.get(id_rol_pk=role_item['id_rol_pk'])
+                    roles_data.append({
+                        'id': role.id_rol_pk,
+                        'name': role.name,
+                        'status': role.role_status
+                    })
+                return self.get_paginated_response({
+                    'success': True,
+                    'message': f'{len(roles_data)} roles encontrados',
+                    'roles': roles_data
+                })
+            serializer = self.get_serializer(queryset, many=True)
+            roles_data = []
+            for role_item in serializer.data:
+                role = Roles.objects.get(id_rol_pk=role_item['id_rol_pk'])
+                roles_data.append({
+                    'id': role.id_rol_pk,
+                    'name': role.name,
+                    'status': role.role_status
+                })
+            return Response({
+                'success': True,
+                'message': f'{len(roles_data)} roles encontrados',
+                'roles': roles_data
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': 'Error al listar roles',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def destroy(self, request, *args, **kwargs):
+        """Eliminar rol con mensaje de confirmación"""
+        try:
+            instance = self.get_object()
+            role_name = instance.name
+            role_id = instance.id_rol_pk
+            self.perform_destroy(instance)
+            return Response({
+                'success': True,
+                'message': f'Rol "{role_name}" (ID: {role_id}) eliminado exitosamente',
+                'deleted_role': {
+                    'id': role_id,
+                    'name': role_name
+                }
+            }, status=status.HTTP_200_OK)
+        except Roles.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Rol no encontrado',
+                'message': 'El rol que intentas eliminar no existe'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': 'Error al eliminar rol',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# Permissions ViewSet
+class PermissionsViewSet(viewsets.ModelViewSet):
+    """API para gestionar permisos"""
+    queryset = Permissions.objects.all()
+    serializer_class = PermissionsSerializer
+
+    def create(self, request, *args, **kwargs):
+        """Crear nuevo permiso con mensaje de confirmación"""
+        try:
+            serializer = self.get_serializer(data=request.data)
+            if serializer.is_valid():
+                permission = serializer.save()
+                return Response({
+                    'success': True,
+                    'message': f'Permiso "{permission.name}" creado exitosamente',
+                    'permission': {
+                        'id': permission.id_permissions_pk,
+                        'name': permission.name,
+                        'status': permission.permission_status
+                    }
+                }, status=status.HTTP_201_CREATED)
+            else:
+                return Response({
+                    'success': False,
+                    'error': 'Datos de permiso inválidos',
+                    'message': 'Por favor verifica los campos requeridos',
+                    'details': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': 'Error al crear permiso',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def retrieve(self, request, *args, **kwargs):
+        """Obtener un permiso específico con mensaje"""
+        try:
+            instance = self.get_object()
+            return Response({
+                'success': True,
+                'message': f'Permiso "{instance.name}" encontrado',
+                'permission': {
+                    'id': instance.id_permissions_pk,
+                    'name': instance.name,
+                    'status': instance.permission_status
+                }
+            }, status=status.HTTP_200_OK)
+        except Permissions.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Permiso no encontrado',
+                'message': 'El permiso solicitado no existe'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': 'Error al obtener permiso',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def update(self, request, *args, **kwargs):
+        """Actualizar permiso con mensaje de confirmación"""
+        try:
+            instance = self.get_object()
+            old_name = instance.name
+            serializer = self.get_serializer(instance, data=request.data, partial=True)
+            if serializer.is_valid():
+                permission = serializer.save()
+                return Response({
+                    'success': True,
+                    'message': f'Permiso "{old_name}" actualizado exitosamente',
+                    'permission': {
+                        'id': permission.id_permissions_pk,
+                        'name': permission.name,
+                        'status': permission.permission_status
+                    }
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'success': False,
+                    'error': 'Datos de actualización inválidos',
+                    'message': 'Por favor verifica los campos a actualizar',
+                    'details': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+        except Permissions.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Permiso no encontrado',
+                'message': 'El permiso que intentas actualizar no existe'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': 'Error al actualizar permiso',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def list(self, request, *args, **kwargs):
+        """Listar permisos con mensaje"""
+        try:
+            queryset = self.filter_queryset(self.get_queryset())
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                permissions_data = []
+                for perm_item in serializer.data:
+                    permission = Permissions.objects.get(id_permissions_pk=perm_item['id_permissions_pk'])
+                    permissions_data.append({
+                        'id': permission.id_permissions_pk,
+                        'name': permission.name,
+                        'status': permission.permission_status
+                    })
+                return self.get_paginated_response({
+                    'success': True,
+                    'message': f'{len(permissions_data)} permisos encontrados',
+                    'permissions': permissions_data
+                })
+            serializer = self.get_serializer(queryset, many=True)
+            permissions_data = []
+            for perm_item in serializer.data:
+                permission = Permissions.objects.get(id_permissions_pk=perm_item['id_permissions_pk'])
+                permissions_data.append({
+                    'id': permission.id_permissions_pk,
+                    'name': permission.name,
+                    'status': permission.permission_status
+                })
+            return Response({
+                'success': True,
+                'message': f'{len(permissions_data)} permisos encontrados',
+                'permissions': permissions_data
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': 'Error al listar permisos',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def destroy(self, request, *args, **kwargs):
+        """Eliminar permiso con mensaje de confirmación"""
+        try:
+            instance = self.get_object()
+            permission_name = instance.name
+            permission_id = instance.id_permissions_pk
+            self.perform_destroy(instance)
+            return Response({
+                'success': True,
+                'message': f'Permiso "{permission_name}" (ID: {permission_id}) eliminado exitosamente',
+                'deleted_permission': {
+                    'id': permission_id,
+                    'name': permission_name
+                }
+            }, status=status.HTTP_200_OK)
+        except Permissions.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Permiso no encontrado',
+                'message': 'El permiso que intentas eliminar no existe'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': 'Error al eliminar permiso',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

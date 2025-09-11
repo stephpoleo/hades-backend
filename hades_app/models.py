@@ -64,7 +64,6 @@ class FormTemplate(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True)
-
     class Meta:
         db_table = 'FormTemplate'
         ordering = ['name']
@@ -80,34 +79,33 @@ class WorkOrder(models.Model):
         ('completed', 'Completado'),
         ('cancelled', 'Cancelado'),
     ]
-    
+
     id = models.AutoField(primary_key=True)
-    date = models.DateField(help_text="Fecha de la orden de trabajo")
+    date = models.DateTimeField(help_text="Fecha y hora de la orden de trabajo")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-    id_usr_fk = models.IntegerField(help_text="ID del usuario responsable")
-    id_eds_fk = models.IntegerField(help_text="ID de la estación de servicio")
-    id_form_template_fk = models.ForeignKey(FormTemplate, on_delete=models.CASCADE, help_text="Plantilla de formulario", db_column='id_form_template_fk')
+    user_id = models.IntegerField()
+    eds_id = models.IntegerField()
+    form_template = models.ForeignKey(FormTemplate, on_delete=models.CASCADE, help_text="Plantilla de formulario", db_column='form_template_id')
     start_date_time = models.DateTimeField(blank=True, null=True)
     end_date_time = models.DateTimeField(blank=True, null=True)
-    id_work_area_fk = models.IntegerField(blank=True, null=True, help_text="ID del área de trabajo")
-
+    work_area_id = models.IntegerField(blank=True, null=True)
     class Meta:
         db_table = 'WorkOrder'
         ordering = ['-date']
 
     def __str__(self):
-        return f"{self.id_form_template_fk.name} - {self.date}"
+        return f"{self.form_template.name} - {self.date}"
     
     @property
-    def name(self):
+    def template_name(self):
         """Obtiene el nombre de la plantilla de formulario"""
-        return self.id_form_template_fk.name if self.id_form_template_fk else "Sin plantilla"
+        return self.form_template.name if self.form_template else "Sin plantilla"
     
     @property
-    def description(self):
+    def template_description(self):
         """Obtiene la descripción de la plantilla de formulario"""
-        return self.id_form_template_fk.description if self.id_form_template_fk else "Sin descripción"
-
+        return self.form_template.description if self.form_template else "Sin descripción"
+    
 class FormQuestions(models.Model):
     """Preguntas que pertenecen a una plantilla de formulario específica"""
     TYPE_CHOICES = [
@@ -122,29 +120,58 @@ class FormQuestions(models.Model):
     question = models.TextField(help_text="Texto de la pregunta")
     is_required = models.BooleanField(default=False, help_text="¿Es obligatoria la respuesta?")
     type = models.CharField(max_length=20, choices=TYPE_CHOICES, default='text', help_text="Tipo de respuesta esperada")
-    id_form_template_fk = models.ForeignKey(FormTemplate, on_delete=models.CASCADE, help_text="Plantilla a la que pertenece", db_column='id_form_template_fk')
     question_order = models.IntegerField(help_text="Orden de aparición de la pregunta")
+    form_template = models.ForeignKey(FormTemplate, on_delete=models.CASCADE, related_name='questions')
 
     class Meta:
         db_table = 'FormQuestions'
-        ordering = ['id_form_template_fk', 'question_order']
+        ordering = ['question_order']
 
     def __str__(self):
-        return f"{self.id_form_template_fk.name}: {self.question[:50]}..."
+        return f"{self.question[:50]}..."
 
 class FormAnswers(models.Model):
     """Respuestas a las preguntas de un formulario para una orden de trabajo específica"""
     id = models.AutoField(primary_key=True)
-    id_question_form_fk = models.ForeignKey(FormQuestions, on_delete=models.CASCADE, help_text="Pregunta respondida", db_column='id_question_form_fk')
-    work_order_id = models.ForeignKey(WorkOrder, on_delete=models.CASCADE, help_text="Orden de trabajo", db_column='work_order_id')
+    question = models.ForeignKey(FormQuestions, on_delete=models.CASCADE, help_text="Pregunta respondida", db_column='question_id')
+    work_order = models.ForeignKey(WorkOrder, on_delete=models.CASCADE, help_text="Orden de trabajo", db_column='work_order_id')
     answer = models.TextField(blank=True, null=True, help_text="Respuesta a la pregunta")
     area = models.CharField(max_length=100, blank=True, null=True, help_text="Área específica del trabajo")
     comments = models.TextField(blank=True, null=True, help_text="Comentarios adicionales")
-    image = models.CharField(max_length=255, blank=True, null=True, help_text="Nombre del archivo de imagen")
+    image = models.ImageField(upload_to='form_answers/', blank=True, null=True, help_text="Archivo de imagen de la respuesta")
 
     class Meta:
         db_table = 'FormAnswers'
-        # Permitir múltiples respuestas por pregunta (ej: diferentes caras, áreas, etc.)
 
     def __str__(self):
-        return f"WO-{self.work_order_id.id}: {self.id_question_form_fk.question[:30]}..."
+        return f"WO-{self.work_order.id}: {self.question.question[:30]}..."
+class Roles(models.Model):
+    id_rol_pk = models.AutoField(primary_key=True, unique=True)
+    name = models.CharField(max_length=50, null=True, blank=True)
+    created_at = models.DateField(null=True, blank=True)
+    updated_at = models.DateField(null=True, blank=True)
+    usr_created_at = models.CharField(max_length=65, null=True, blank=True)
+    usr_updated_at = models.CharField(max_length=65, null=True, blank=True)
+    permissions = models.ManyToManyField('Permissions', blank=True, related_name='roles')
+    role_status = models.BooleanField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'Roles'
+
+    def __str__(self):
+        return self.name if self.name else f"Rol {self.id_rol_pk}"
+
+class Permissions(models.Model):
+    id_permissions_pk = models.AutoField(primary_key=True, unique=True)
+    name = models.CharField(max_length=50, null=True, blank=True)
+    created_at = models.DateField(null=True, blank=True)
+    updated_at = models.DateField(null=True, blank=True)
+    usr_created_at = models.CharField(max_length=65, null=True, blank=True)
+    usr_updated_at = models.CharField(max_length=65, null=True, blank=True)
+    permission_status = models.BooleanField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'Permissions'
+
+    def __str__(self):
+        return self.name if self.name else f"Permiso {self.id_permissions_pk}"
