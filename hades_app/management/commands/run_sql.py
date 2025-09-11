@@ -30,7 +30,6 @@ class Command(BaseCommand):
                 sql_content = file.read()
             
             with connection.cursor() as cursor:
-                # Dividir el contenido por punto y coma para ejecutar múltiples comandos
                 sql_commands = [cmd.strip() for cmd in sql_content.split(';') if cmd.strip()]
                 
                 for command in sql_commands:

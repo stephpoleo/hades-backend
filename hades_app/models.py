@@ -64,8 +64,6 @@ class FormTemplate(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True)
-    # Las preguntas se relacionan por ForeignKey en FormQuestions
-
     class Meta:
         db_table = 'FormTemplate'
         ordering = ['name']
@@ -144,20 +142,17 @@ class FormAnswers(models.Model):
 
     class Meta:
         db_table = 'FormAnswers'
-        # Permitir múltiples respuestas por pregunta (ej: diferentes caras, áreas, etc.)
 
     def __str__(self):
         return f"WO-{self.work_order.id}: {self.question.question[:30]}..."
-
-# === INTEGRACIÓN DE MODELOS DE ROLES Y PERMISOS ===
 class Roles(models.Model):
     id_rol_pk = models.AutoField(primary_key=True, unique=True)
-    name = models.CharField(max_length=20, null=True, blank=True)
+    name = models.CharField(max_length=50, null=True, blank=True)
     created_at = models.DateField(null=True, blank=True)
     updated_at = models.DateField(null=True, blank=True)
     usr_created_at = models.CharField(max_length=65, null=True, blank=True)
     usr_updated_at = models.CharField(max_length=65, null=True, blank=True)
-    id_permission_fk = models.IntegerField(null=True, blank=True)  # Referencia a Permissions
+    permissions = models.ManyToManyField('Permissions', blank=True, related_name='roles')
     role_status = models.BooleanField(null=True, blank=True)
 
     class Meta:
@@ -168,7 +163,7 @@ class Roles(models.Model):
 
 class Permissions(models.Model):
     id_permissions_pk = models.AutoField(primary_key=True, unique=True)
-    name = models.CharField(max_length=20, null=True, blank=True)
+    name = models.CharField(max_length=50, null=True, blank=True)
     created_at = models.DateField(null=True, blank=True)
     updated_at = models.DateField(null=True, blank=True)
     usr_created_at = models.CharField(max_length=65, null=True, blank=True)

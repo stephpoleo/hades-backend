@@ -157,13 +157,20 @@ class FormAnswersSerializer(serializers.ModelSerializer):
         rep['work_order_id'] = instance.work_order.id if instance.work_order else None
         return rep
 
-# === INTEGRACIÓN DE SERIALIZERS DE ROLES Y PERMISOS ===
-class RolesSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Roles
-        fields = '__all__'
-
 class PermissionsSerializer(serializers.ModelSerializer):
     class Meta:
         model = Permissions
         fields = '__all__'
+
+class RolesSerializer(serializers.ModelSerializer):
+    permissions = PermissionsSerializer(many=True, read_only=True)
+    permissions_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Permissions.objects.all(), many=True, write_only=True, source='permissions', required=False
+    )
+
+    class Meta:
+        model = Roles
+        fields = [
+            'id_rol_pk', 'name', 'created_at', 'updated_at', 'usr_created_at', 'usr_updated_at',
+            'permissions', 'permissions_ids', 'role_status'
+        ]

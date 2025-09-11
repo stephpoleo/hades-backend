@@ -1,3 +1,31 @@
+-- === DUMMY DATA PARA ROLES Y PERMISOS ===
+
+-- Permisos
+INSERT INTO "Permissions" ("id_permissions_pk", "name", "created_at", "updated_at", "usr_created_at", "usr_updated_at", "permission_status") VALUES
+	(1, 'read_forms', '2025-09-07', '2025-09-07', 'system', 'system', TRUE),
+	(2, 'answer_forms', '2025-09-07', '2025-09-07', 'system', 'system', TRUE),
+	(3, 'crud_forms', '2025-09-07', '2025-09-07', 'system', 'system', TRUE),
+	(4, 'crud_users', '2025-09-07', '2025-09-07', 'system', 'system', TRUE);
+
+-- Roles
+INSERT INTO "Roles" ("id_rol_pk", "name", "created_at", "updated_at", "usr_created_at", "usr_updated_at", "role_status") VALUES
+	(1, 'usuario', '2025-09-07', '2025-09-07', 'system', 'system', TRUE),
+	(2, 'administrador', '2025-09-07', '2025-09-07', 'system', 'system', TRUE);
+
+-- Relacionar roles con permisos
+INSERT INTO "Roles_permissions" ("roles_id", "permissions_id") VALUES
+	(1, 1), -- usuario: read_assigned_forms
+	(1, 2), -- usuario: answer_assigned_forms
+	(2, 1), -- admin: read_assigned_forms
+	(2, 2), -- admin: answer_assigned_forms
+	(2, 3), -- admin: crud_forms
+	(2, 4); -- admin: crud_users
+
+
+-- === DUMMY DATA PARA EDS, USUARIOS, PLANTILLAS, PREGUNTAS, ORDENES DE TRABAJO Y RESPUESTAS ===
+INSERT INTO "Users" ("name", "email", "password", "usr_status", "id_eds_fk", "id_role_fk") VALUES
+	('Stephanie Poleo', 'stephanie.poleo@natgas.com.mx', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewReNGdWBGu6TQFu', TRUE, 1, 2);
+
 INSERT INTO "EDS" ("name", "plaza", "state", "municipality", "zip_code", "plaza_status", "long_eds", "latit_eds") VALUES
 ('EDS 5 de Febrero', 'QUERETARO', 'Queretaro', 'Bernardo Quintana', '76230', TRUE, -100.389, 20.589),
 ('EDS Ecatepec', 'ESTADO DE MEXICO', 'Estado de Mexico', 'Guadalupe', '67100', TRUE, -99.063, 19.601),
@@ -43,7 +71,6 @@ INSERT INTO "FormQuestions" ("question", "is_required", "type", "question_order"
 ('Cantidad de papel', FALSE, 'text', 3, 2),
 ('Nivel de basura en el bote', FALSE, 'text', 4, 2),
 ('Tomar foto', TRUE, 'boolean', 5, 2);
--- Relaciona preguntas con plantillas (ajusta los IDs según correspondan)
 
 INSERT INTO "FormAnswers" ("question_id", "work_order_id", "answer", "area", "comments", "image") VALUES
 (1, 1, 'Turno 1', NULL, 'Turno matutino', NULL),

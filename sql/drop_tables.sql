@@ -1,6 +1,5 @@
 -- Script para borrar completamente todas las tablas de la base de datos
 -- CUIDADO: Este script eliminará TODAS las tablas y sus datos
--- Solo incluye tablas manejadas por Django
 
 -- Borrar tablas en orden (respetando foreign keys)
 DROP TABLE IF EXISTS "FormAnswers" CASCADE;
