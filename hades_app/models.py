@@ -1,5 +1,5 @@
 from django.db import models
-from django.contrib.auth.hashers import make_password, check_password
+from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
 
 # Create your models here.
 
@@ -17,15 +17,40 @@ class EDS(models.Model):
     class Meta:
         db_table = 'EDS'
 
-class Users(models.Model):
+
+# UserManager personalizado
+class UserManager(BaseUserManager):
+    def create_user(self, email, name, password=None, **extra_fields):
+        if not email:
+            raise ValueError('El email es obligatorio')
+        email = self.normalize_email(email)
+        user = self.model(email=email, name=name, **extra_fields)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
+
+    def create_superuser(self, email, name, password=None, **extra_fields):
+        extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('is_superuser', True)
+        extra_fields.setdefault('usr_status', True)
+        return self.create_user(email, name, password, **extra_fields)
+
+# Modelo de usuario principal
+class Users(AbstractBaseUser, PermissionsMixin):
     id_usr_pk = models.AutoField(primary_key=True)
     name = models.CharField(max_length=65)
-    email = models.CharField(max_length=30, unique=True)
-    password = models.CharField(max_length=100)
+    email = models.EmailField(max_length=255, unique=True)
     usr_status = models.BooleanField(default=True)
+    is_staff = models.BooleanField(default=False)
+    is_superuser = models.BooleanField(default=False)
     id_role_fk = models.IntegerField(null=True, blank=True)  # Referencia a Roles 
     id_eds_fk = models.IntegerField(null=True, blank=True)  # Referencia a EDS
     id_work_area_fk = models.IntegerField(null=True, blank=True)  # Referencia a WorkArea
+
+    USERNAME_FIELD = 'email'
+    REQUIRED_FIELDS = ['name']
+
+    objects = UserManager()
 
     class Meta:
         db_table = 'Users'
@@ -33,26 +58,16 @@ class Users(models.Model):
     def __str__(self):
         return f"{self.name} ({self.email})"
 
-    def set_password(self, raw_password):
-        """Encripta la contraseña antes de guardarla"""
-        self.password = make_password(raw_password)
-
-    def check_password(self, raw_password):
-        """Verifica si la contraseña es correcta"""
-        return check_password(raw_password, self.password)
-
     @property
     def is_active(self):
-        """Retorna True si el usuario está activo"""
         return self.usr_status
 
     @property
     def role_name(self):
-        """Retorna el nombre del rol del usuario (temporal)"""
         if self.id_role_fk == 1:
-            return "Administrador"
-        elif self.id_role_fk == 2:
             return "Empleado"
+        elif self.id_role_fk == 2:
+            return "Administrador"
         else:
             return "Sin rol"
 
