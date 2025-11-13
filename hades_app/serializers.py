@@ -1,6 +1,18 @@
 from rest_framework import serializers
 from .models import Users, EDS, FormTemplate, WorkOrder, FormQuestions, FormAnswers, Roles, Permissions
 
+# Serializer para EDS
+class EDSSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EDS
+        fields = [
+            'id_eds_pk', 'name', 'plaza', 'state', 'municipality', 'zip_code',
+            'plaza_status', 'long_eds', 'latit_eds'
+        ]
+
+# Importar serializers necesarios para referencias
+## Eliminada importación circular innecesaria
+
 
 class UsersSerializer(serializers.ModelSerializer):
     role_name = serializers.CharField(read_only=True)
@@ -20,15 +32,7 @@ class UsersSerializer(serializers.ModelSerializer):
         if obj.id_eds_fk:
             try:
                 eds = EDS.objects.get(id_eds_pk=obj.id_eds_fk)
-                return {
-                    'id': eds.id_eds_pk,
-                    'name': eds.name,
-                    'plaza': eds.plaza,
-                    'state': eds.state,
-                    'municipality': eds.municipality,
-                    'zip_code': eds.zip_code,
-                    'plaza_status': eds.plaza_status
-                }
+                return EDSSerializer(eds).data
             except EDS.DoesNotExist:
                 return None
         return None
@@ -40,60 +44,95 @@ class UsersSerializer(serializers.ModelSerializer):
         if password:
             user.set_password(password)
             user.save()
-        return user
-    
-    def update(self, instance, validated_data):
-        """Actualizar usuario, encriptando contraseña si se proporciona"""
-        password = validated_data.pop('password', None)
-        user = super().update(instance, validated_data)
-        if password:
-            user.set_password(password)
-            user.save()
-        return user
 
 
-class EDSSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = EDS
-        fields = '__all__'
-
-
-class FormTemplateSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = FormTemplate
-        fields = '__all__'
-
-
+# Serializers base primero
 class FormQuestionsSerializer(serializers.ModelSerializer):
-    template_name = serializers.CharField(source='id_form_template_fk.name', read_only=True)
-    
     class Meta:
         model = FormQuestions
-        fields = '__all__'
+        fields = ['id', 'question', 'type', 'is_required', 'question_order']
 
+class FormTemplateSerializer(serializers.ModelSerializer):
+    questions = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+    class Meta:
+        model = FormTemplate
+        fields = ['id', 'name', 'description', 'created_at', 'updated_at', 'is_active', 'questions']
 
+# Ahora los serializers que los usan
 class WorkOrderSerializer(serializers.ModelSerializer):
+    form_template = FormTemplateSerializer()
+    user = UsersSerializer(source='get_user', read_only=True)
+    total_questions = serializers.SerializerMethodField()
+    total_answers = serializers.SerializerMethodField()
+    completion_status = serializers.SerializerMethodField()
+    answers = serializers.SerializerMethodField()
 
-    total_questions = serializers.SerializerMethodField(read_only=True)
-    total_answers = serializers.SerializerMethodField(read_only=True)
-    completion_status = serializers.SerializerMethodField(read_only=True)
+    class Meta:
+        model = WorkOrder
+        fields = [
+            'id', 'date', 'status', 'form_template', 'user',
+            'total_questions', 'total_answers', 'completion_status',
+            'start_date_time', 'end_date_time', 'work_area_id',
+            'answers'
+        ]
 
     def get_total_questions(self, obj):
         return obj.form_template.questions.count() if obj.form_template else 0
 
     def get_total_answers(self, obj):
-        return FormAnswers.objects.filter(work_order=obj).count()
+        # Solo contar respuestas que no estén vacías ni nulas
+        return FormAnswers.objects.filter(work_order=obj).exclude(answer__isnull=True).exclude(answer__exact='').count()
 
     def get_completion_status(self, obj):
-        total_q = self.get_total_questions(obj)
-        total_a = self.get_total_answers(obj)
-        if total_a == 0:
-            return 'draft'
-        elif total_a < total_q:
-            return 'pending'
-        elif total_a >= total_q and total_q > 0:
-            return 'completed'
-        return 'draft'
+        # Todas las preguntas de la plantilla
+        all_questions = obj.form_template.questions.all()
+        total_questions = all_questions.count()
+        answered = 0
+        for q in all_questions:
+            ans = FormAnswers.objects.filter(work_order=obj, question=q).exclude(answer__isnull=True).exclude(answer__exact='').first()
+            if ans:
+                answered += 1
+        if total_questions == 0:
+            return "pending"
+        if answered == 0:
+            return "pending"
+        if 0 < answered < total_questions:
+            return "draft"
+        if answered == total_questions:
+            return "completed"
+        return "unknown"
+
+    def get_answers(self, obj):
+        # Devuelve las respuestas por pregunta para esta orden de trabajo
+        answers = FormAnswers.objects.filter(work_order=obj)
+        result = []
+        for question in obj.form_template.questions.all():
+            answer_obj = answers.filter(question=question).first()
+            result.append({
+                'question': question.id,
+                'question_text': question.question,
+                'type': question.type,
+                'answer': answer_obj.answer if answer_obj else None,
+                'comments': answer_obj.comments if answer_obj else None,
+                'image': answer_obj.image.url if answer_obj and answer_obj.image else None
+            })
+        return result
+
+    def get_answers(self, obj):
+        # Devuelve las respuestas por pregunta para esta orden de trabajo
+        answers = FormAnswers.objects.filter(work_order=obj)
+        result = []
+        for question in obj.form_template.questions.all():
+            answer_obj = answers.filter(question=question).first()
+            result.append({
+                'question': question.id,
+                'question_text': question.question,
+                'type': question.type,
+                'answer': answer_obj.answer if answer_obj else None,
+                'comments': answer_obj.comments if answer_obj else None,
+                'image': answer_obj.image.url if answer_obj and answer_obj.image else None
+            })
+        return result
 
 
     form_template = FormTemplateSerializer(read_only=True)

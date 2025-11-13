@@ -58,7 +58,7 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',  # Reactivado
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
@@ -167,6 +167,7 @@ CORS_ALLOW_CREDENTIALS = True
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"  # Si API y front están en el mismo dominio/subdominio
 SESSION_COOKIE_DOMAIN = DOMAIN    # None en local; ".midominio.com" en prod
+SESSION_COOKIE_AGE = 1209600  # 2 semanas (en segundos)
 CSRF_COOKIE_HTTPONLY = False      # Angular necesita leerla (HttpClientXsrfModule)
 CSRF_COOKIE_SAMESITE = "Lax"
 

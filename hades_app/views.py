@@ -38,16 +38,19 @@ def logout_view(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def me_view(request):
+    import logging
+    logger = logging.getLogger("django")
     user = request.user
+    logger.warning(f"/api/auth/me/: session_key={request.session.session_key}, user={getattr(user, 'email', None)}, is_authenticated={user.is_authenticated}, is_active={getattr(user, 'is_active', None)}")
     return JsonResponse({
-        'id': user.id_usr_pk,
-        'email': user.email,
-        'username': user.get_username(),
-        'name': user.name,
-        'role': user.role_name,
-        'is_superuser': user.is_superuser,
-        'is_staff': user.is_staff,
-        'is_active': user.is_active,
+        'id': getattr(user, 'id_usr_pk', None),
+        'email': getattr(user, 'email', None),
+        'username': user.get_username() if hasattr(user, 'get_username') else None,
+        'name': getattr(user, 'name', None),
+        'role': getattr(user, 'role_name', None),
+        'is_superuser': getattr(user, 'is_superuser', None),
+        'is_staff': getattr(user, 'is_staff', None),
+        'is_active': getattr(user, 'is_active', None),
     })
 from django.http import JsonResponse
 from rest_framework import viewsets, status
@@ -514,14 +517,38 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
     serializer_class = FormAnswersSerializer
 
     def create(self, request, *args, **kwargs):
-        question_id = request.data.get('question_id')
-        work_order_id = request.data.get('work_order_id')
+        data = request.data
+        # Si es un array, procesar cada respuesta
+        if isinstance(data, list):
+            results = []
+            errors = []
+            for item in data:
+                question_id = item.get('question_id')
+                work_order_id = item.get('work_order_id')
+                if not question_id or not work_order_id:
+                    errors.append({'detail': 'question_id y work_order_id son requeridos.', 'data': item})
+                    continue
+                instance = FormAnswers.objects.filter(question_id=question_id, work_order_id=work_order_id).first()
+                if instance:
+                    serializer = self.get_serializer(instance, data=item, partial=True)
+                    serializer.is_valid(raise_exception=True)
+                    self.perform_update(serializer)
+                    results.append(serializer.data)
+                else:
+                    serializer = self.get_serializer(data=item)
+                    serializer.is_valid(raise_exception=True)
+                    self.perform_create(serializer)
+                    results.append(serializer.data)
+            status_code = 200 if not errors else 207
+            return Response({'results': results, 'errors': errors}, status=status_code)
+        # Si es un solo objeto, procesar como antes
+        question_id = data.get('question_id')
+        work_order_id = data.get('work_order_id')
         if not question_id or not work_order_id:
             return Response({'detail': 'question_id y work_order_id son requeridos.'}, status=400)
-
         instance = FormAnswers.objects.filter(question_id=question_id, work_order_id=work_order_id).first()
         if instance:
-            serializer = self.get_serializer(instance, data=request.data, partial=True)
+            serializer = self.get_serializer(instance, data=data, partial=True)
             serializer.is_valid(raise_exception=True)
             self.perform_update(serializer)
             return Response(serializer.data, status=200)

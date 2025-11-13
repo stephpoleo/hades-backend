@@ -129,6 +129,7 @@ class FormQuestions(models.Model):
         ('boolean', 'Sí/No'),
         ('date', 'Fecha'),
         ('file', 'Archivo'),
+        ('percent', 'Porcentaje'),
     ]
     
     id = models.AutoField(primary_key=True)
