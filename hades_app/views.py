@@ -1,3 +1,57 @@
+from django.views.decorators.csrf import ensure_csrf_cookie
+from django.middleware.csrf import get_token
+from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.decorators import login_required
+from django.utils.decorators import method_decorator
+from django.views.decorators.http import require_POST
+from django.contrib.auth import get_user_model
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework import status
+
+# Endpoint: /api/auth/csrf/
+@api_view(['GET'])
+@ensure_csrf_cookie
+def csrf(request):
+    return JsonResponse({'csrfToken': get_token(request)})
+
+# Endpoint: /api/auth/login/
+@api_view(['POST'])
+def login_view(request):
+    data = request.data
+    email = data.get('email')
+    password = data.get('password')
+    user = authenticate(request, username=email, password=password)
+    if user is not None:
+        login(request, user)
+        return JsonResponse({'success': True, 'message': 'Login exitoso'})
+    else:
+        return JsonResponse({'success': False, 'message': 'Credenciales inválidas'}, status=401)
+
+# Endpoint: /api/auth/logout/
+@api_view(['POST'])
+def logout_view(request):
+    logout(request)
+    return JsonResponse({'success': True, 'message': 'Logout exitoso'})
+
+# Endpoint: /api/auth/me/
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def me_view(request):
+    import logging
+    logger = logging.getLogger("django")
+    user = request.user
+    logger.warning(f"/api/auth/me/: session_key={request.session.session_key}, user={getattr(user, 'email', None)}, is_authenticated={user.is_authenticated}, is_active={getattr(user, 'is_active', None)}")
+    return JsonResponse({
+        'id': getattr(user, 'id_usr_pk', None),
+        'email': getattr(user, 'email', None),
+        'username': user.get_username() if hasattr(user, 'get_username') else None,
+        'name': getattr(user, 'name', None),
+        'role': getattr(user, 'role_name', None),
+        'is_superuser': getattr(user, 'is_superuser', None),
+        'is_staff': getattr(user, 'is_staff', None),
+        'is_active': getattr(user, 'is_active', None),
+    })
 from django.http import JsonResponse
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, action
@@ -184,7 +238,6 @@ class EDSViewSet(viewsets.ModelViewSet):
             eds_name = instance.name
             eds_id = instance.id_eds_pk
             
-            # Realizar la eliminación
             self.perform_destroy(instance)
             
             return Response({
@@ -294,7 +347,6 @@ class UsersViewSet(viewsets.ModelViewSet):
             if serializer.is_valid():
                 user = serializer.save()
                 
-                # Si se actualiza la contraseña
                 if 'password' in request.data:
                     user.set_password(request.data['password'])
                     user.save()
@@ -365,7 +417,6 @@ class UsersViewSet(viewsets.ModelViewSet):
             user_name = instance.name
             user_id = instance.id_usr_pk
             
-            # Realizar la eliminación
             self.perform_destroy(instance)
             
             return Response({
@@ -405,6 +456,13 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
     queryset = WorkOrder.objects.all()
     serializer_class = WorkOrderSerializer
 
+    def get_queryset(self):
+        queryset = WorkOrder.objects.all()
+        user_id = self.request.query_params.get('user_id')
+        if user_id:
+            queryset = queryset.filter(user_id=user_id)
+        return queryset
+
 
 # FormQuestions ViewSet
 class FormQuestionsViewSet(viewsets.ModelViewSet):
@@ -439,7 +497,6 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
         """
         Elimina respuestas duplicadas por (question_id, work_order_id), dejando solo la más reciente (mayor id).
         """
-        # Agrupa por question_id y work_order_id, cuenta y obtiene el id máximo (más reciente)
         duplicates = (
             FormAnswers.objects.values('question_id', 'work_order_id')
             .annotate(count=Count('id'), max_id=Max('id'))
@@ -447,7 +504,6 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
         )
         total_deleted = 0
         for dup in duplicates:
-            # Obtiene todos los ids menos el más reciente
             to_delete = (
                 FormAnswers.objects
                 .filter(question_id=dup['question_id'], work_order_id=dup['work_order_id'])
@@ -461,25 +517,44 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
     serializer_class = FormAnswersSerializer
 
     def create(self, request, *args, **kwargs):
-        # Extrae los IDs de pregunta y work_order del request
-        question_id = request.data.get('question_id')
-        work_order_id = request.data.get('work_order_id')
+        data = request.data
+        # Si es un array, procesar cada respuesta
+        if isinstance(data, list):
+            results = []
+            errors = []
+            for item in data:
+                question_id = item.get('question_id')
+                work_order_id = item.get('work_order_id')
+                if not question_id or not work_order_id:
+                    errors.append({'detail': 'question_id y work_order_id son requeridos.', 'data': item})
+                    continue
+                instance = FormAnswers.objects.filter(question_id=question_id, work_order_id=work_order_id).first()
+                if instance:
+                    serializer = self.get_serializer(instance, data=item, partial=True)
+                    serializer.is_valid(raise_exception=True)
+                    self.perform_update(serializer)
+                    results.append(serializer.data)
+                else:
+                    serializer = self.get_serializer(data=item)
+                    serializer.is_valid(raise_exception=True)
+                    self.perform_create(serializer)
+                    results.append(serializer.data)
+            status_code = 200 if not errors else 207
+            return Response({'results': results, 'errors': errors}, status=status_code)
+        # Si es un solo objeto, procesar como antes
+        question_id = data.get('question_id')
+        work_order_id = data.get('work_order_id')
         if not question_id or not work_order_id:
             return Response({'detail': 'question_id y work_order_id son requeridos.'}, status=400)
-
-        # Busca si ya existe una respuesta para esa combinación
         instance = FormAnswers.objects.filter(question_id=question_id, work_order_id=work_order_id).first()
         if instance:
-            # Si existe, actualiza el registro existente
-            serializer = self.get_serializer(instance, data=request.data, partial=True)
+            serializer = self.get_serializer(instance, data=data, partial=True)
             serializer.is_valid(raise_exception=True)
             self.perform_update(serializer)
             return Response(serializer.data, status=200)
         else:
-            # Si no existe, crea uno nuevo
             return super().create(request, *args, **kwargs)
 
-# === INTEGRACIÓN DE VIEWSETS DE ROLES Y PERMISOS ===
 class RolesViewSet(viewsets.ModelViewSet):
     """API para gestionar roles"""
     queryset = Roles.objects.all()

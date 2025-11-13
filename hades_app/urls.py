@@ -16,4 +16,9 @@ router.register(r'permissions', views.PermissionsViewSet)
 urlpatterns = [
     # API REST endpoints
     path('api/', include(router.urls)),
+    # Auth endpoints para SPA/PWA
+    path('api/auth/csrf/', views.csrf, name='csrf'),
+    path('api/auth/login/', views.login_view, name='login'),
+    path('api/auth/logout/', views.logout_view, name='logout'),
+    path('api/auth/me/', views.me_view, name='me'),
 ]

@@ -1,3 +1,5 @@
+# Modelo de usuario personalizado
+AUTH_USER_MODEL = 'hades_app.Users'
 """
 Django settings for server project.
 
@@ -9,11 +11,11 @@ https://docs.djangoproject.com/en/5.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
+
 import os
+from datetime import timedelta
 from dotenv import load_dotenv
-
 from pathlib import Path
-
 load_dotenv()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -26,14 +28,19 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv("SECRET_KEY")
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv("DEBUG") == "True"
 
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS").split(",")
+# === DEV/PROD TOGGLES Y ORIGINS ===
+DEBUG = os.getenv("DEBUG", "true").lower() == "true"
+FRONT_ORIGIN = os.getenv("FRONT_ORIGIN", "http://localhost:4200")
+API_ORIGIN = os.getenv("API_ORIGIN", "http://localhost:8000")
+DOMAIN = os.getenv("COOKIE_DOMAIN", None)  # e.g. ".midominio.com" en prod
+
+ALLOWED_HOSTS = ["localhost", "127.0.0.1", os.getenv("HOST", "")]  # Puedes ajustar según despliegue
+CSRF_TRUSTED_ORIGINS = [FRONT_ORIGIN.replace("http://", "http://").replace("https://", "https://")]
+
 
 
 # Application definition
-
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -51,7 +58,7 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',  # Reactivado
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
@@ -122,14 +129,14 @@ USE_I18N = True
 USE_TZ = True
 
 
+
 # Django REST Framework configuration
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.SessionAuthentication',
-        'rest_framework.authentication.TokenAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.AllowAny',  # Allow unauthenticated access for development
+        'rest_framework.permissions.AllowAny',  # Cambia a IsAuthenticated en prod
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
@@ -151,41 +158,23 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # ============================================================================
-# CORS SETTINGS FOR ANGULAR FRONTEND
-# ============================================================================
 
-# Permitir CORS desde localhost Angular (desarrollo)
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:4200",  # Angular dev server default
-    "http://127.0.0.1:4200",
-    "http://localhost:3000",  # Por si usas otro puerto
-]
-
-# En desarrollo, puedes usar esto para permitir cualquier origen (NO usar en producción)
-# CORS_ALLOW_ALL_ORIGINS = True
-
-# Permitir cookies y headers de autenticación
+# === CORS Y COOKIES SEGÚN RECETA ===
+CORS_ALLOWED_ORIGINS = [FRONT_ORIGIN]
 CORS_ALLOW_CREDENTIALS = True
 
-# Headers permitidos para Angular
-CORS_ALLOW_HEADERS = [
-    'accept',
-    'accept-encoding',
-    'authorization',
-    'content-type',
-    'dnt',
-    'origin',
-    'user-agent',
-    'x-csrftoken',
-    'x-requested-with',
-]
+# Cookies de sesión/CSRF
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Lax"  # Si API y front están en el mismo dominio/subdominio
+SESSION_COOKIE_DOMAIN = DOMAIN    # None en local; ".midominio.com" en prod
+SESSION_COOKIE_AGE = 1209600  # 2 semanas (en segundos)
+CSRF_COOKIE_HTTPONLY = False      # Angular necesita leerla (HttpClientXsrfModule)
+CSRF_COOKIE_SAMESITE = "Lax"
 
-# Métodos HTTP permitidos
-CORS_ALLOWED_METHODS = [
-    'DELETE',
-    'GET',
-    'OPTIONS',
-    'PATCH',
-    'POST',
-    'PUT',
-]
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True

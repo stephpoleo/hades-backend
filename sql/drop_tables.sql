@@ -1,11 +1,14 @@
 -- Script para borrar completamente todas las tablas de la base de datos
 -- CUIDADO: Este script eliminará TODAS las tablas y sus datos
 
+
 -- Borrar tablas en orden (respetando foreign keys)
 DROP TABLE IF EXISTS "FormAnswers" CASCADE;
 DROP TABLE IF EXISTS "WorkOrder" CASCADE;
 DROP TABLE IF EXISTS "FormQuestions" CASCADE;
 DROP TABLE IF EXISTS "FormTemplate" CASCADE;
+DROP TABLE IF EXISTS "Users_user_permissions" CASCADE;
+DROP TABLE IF EXISTS "Users_groups" CASCADE;
 DROP TABLE IF EXISTS "Users" CASCADE;
 DROP TABLE IF EXISTS "EDS" CASCADE;
 

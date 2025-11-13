@@ -23,19 +23,19 @@ INSERT INTO "Roles_permissions" ("roles_id", "permissions_id") VALUES
 
 
 -- === DUMMY DATA PARA EDS, USUARIOS, PLANTILLAS, PREGUNTAS, ORDENES DE TRABAJO Y RESPUESTAS ===
-INSERT INTO "Users" ("name", "email", "password", "usr_status", "id_eds_fk", "id_role_fk") VALUES
-	('Stephanie Poleo', 'stephanie.poleo@natgas.com.mx', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewReNGdWBGu6TQFu', TRUE, 1, 2);
+INSERT INTO "Users" ("name", "email", "password", "usr_status", "is_staff", "is_superuser", "id_eds_fk", "id_role_fk") VALUES
+	('Stephanie Poleo', 'stephanie.poleo@natgas.com.mx', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewReNGdWBGu6TQFu', TRUE, FALSE, FALSE, 1, 2);
 
 INSERT INTO "EDS" ("name", "plaza", "state", "municipality", "zip_code", "plaza_status", "long_eds", "latit_eds") VALUES
 ('EDS 5 de Febrero', 'QUERETARO', 'Queretaro', 'Bernardo Quintana', '76230', TRUE, -100.389, 20.589),
 ('EDS Ecatepec', 'ESTADO DE MEXICO', 'Estado de Mexico', 'Guadalupe', '67100', TRUE, -99.063, 19.601),
 ('EDS Colón', 'NUEVO LEON', 'Nuevo León', 'San Pedro', '66200', TRUE, -100.355, 25.653);
 
-INSERT INTO "Users" ("name", "email", "password", "usr_status", "id_eds_fk") VALUES
-('Juan Pérez', 'juan.perez@natgas.com.mx', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewReNGdWBGu6TQFu', TRUE, 1),
-('María González', 'maria.gonzalez@natgas.com.mx', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewReNGdWBGu6TQFu', TRUE, 1),
-('Carlos Rodríguez', 'carlos.rodriguez@natgas.com.mx', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewReNGdWBGu6TQFu', TRUE, 3),
-('Ana López', 'ana.lopez@natgas.com.mx', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewReNGdWBGu6TQFu', TRUE, 2);
+INSERT INTO "Users" ("name", "email", "password", "usr_status", "is_staff", "is_superuser", "id_eds_fk") VALUES
+('Juan Pérez', 'juan.perez@natgas.com.mx', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewReNGdWBGu6TQFu', TRUE, FALSE, FALSE, 1),
+('María González', 'maria.gonzalez@natgas.com.mx', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewReNGdWBGu6TQFu', TRUE, FALSE, FALSE, 1),
+('Carlos Rodríguez', 'carlos.rodriguez@natgas.com.mx', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewReNGdWBGu6TQFu', TRUE, FALSE, FALSE, 3),
+('Ana López', 'ana.lopez@natgas.com.mx', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewReNGdWBGu6TQFu', TRUE, FALSE, FALSE, 2);
 
 INSERT INTO "FormTemplate" ("name", "description", "created_at", "updated_at", "is_active") VALUES
 ('F-PRO-OPE-013 (F) MANTENIMIENTO AUTÓNOMO SURTIDORES EDS FIJAS', 'Formulario para mantenimiento autónomo de surtidores en estaciones de servicio fijas', '2024-01-01', '2024-01-01', TRUE),
