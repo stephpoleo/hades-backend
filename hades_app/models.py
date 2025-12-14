@@ -313,7 +313,12 @@ class WorkOrder(models.Model):
     date = models.DateTimeField(help_text="Fecha y hora de la orden de trabajo")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
     user_id = models.IntegerField()
-    eds_id = models.IntegerField()
+    eds_id = models.CharField(
+        max_length=10,
+        blank=True,
+        null=True,
+        help_text="Código de la EDS asignada a la orden",
+    )
     form_template = models.ForeignKey(
         FormTemplate,
         on_delete=models.CASCADE,

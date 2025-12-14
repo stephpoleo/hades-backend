@@ -68,9 +68,24 @@ class UsersSerializer(serializers.ModelSerializer):
 
 # Serializers base primero
 class FormQuestionsSerializer(serializers.ModelSerializer):
+    form_template = serializers.PrimaryKeyRelatedField(read_only=True)
+    form_template_id = serializers.PrimaryKeyRelatedField(
+        queryset=FormTemplate.objects.all(),
+        source="form_template",
+        write_only=True,
+    )
+
     class Meta:
         model = FormQuestions
-        fields = ["id", "question", "type", "is_required", "question_order"]
+        fields = [
+            "id",
+            "question",
+            "type",
+            "is_required",
+            "question_order",
+            "form_template",
+            "form_template_id",
+        ]
 
 
 class FormTemplateSerializer(serializers.ModelSerializer):
