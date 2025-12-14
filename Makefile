@@ -74,7 +74,7 @@ create-superuser: check-venv
 # Ejecutar servidor de desarrollo
 run-server: check-venv
 	@echo "Iniciando servidor de desarrollo..."
-	@call $(VENV_SCRIPTS)\activate.bat & $(PYTHON) manage.py runserver
+	@call $(VENV_SCRIPTS)\activate.bat & $(PYTHON) manage.py runserver 0.0.0.0:8000
 
 # Limpiar archivos temporales
 clean:

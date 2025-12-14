@@ -1,5 +1,5 @@
 # Modelo de usuario personalizado
-AUTH_USER_MODEL = 'hades_app.Users'
+AUTH_USER_MODEL = "hades_app.Users"
 """
 Django settings for server project.
 
@@ -16,7 +16,6 @@ import os
 from datetime import timedelta
 from dotenv import load_dotenv
 from pathlib import Path
-load_dotenv()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -25,63 +24,105 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
+# === Elegir entorno: dev o prod ===
+DJANGO_ENV = os.getenv("DJANGO_ENV", "prod")  # dev por defecto
+
+if DJANGO_ENV == "prod":
+    env_file = BASE_DIR / ".env.prod"
+else:
+    env_file = BASE_DIR / ".env.dev"
+
+load_dotenv(env_file)
+
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv("SECRET_KEY")
 
 
 # === DEV/PROD TOGGLES Y ORIGINS ===
+FORCE_HTTPS = os.getenv("FORCE_HTTPS", "false").lower() == "true"
 DEBUG = os.getenv("DEBUG", "true").lower() == "true"
 FRONT_ORIGIN = os.getenv("FRONT_ORIGIN", "http://localhost:4200")
 API_ORIGIN = os.getenv("API_ORIGIN", "http://localhost:8000")
-DOMAIN = os.getenv("COOKIE_DOMAIN", None)  # e.g. ".midominio.com" en prod
+DOMAIN = os.getenv("COOKIE_DOMAIN", None)
 
-ALLOWED_HOSTS = ["localhost", "127.0.0.1", os.getenv("HOST", "")]  # Puedes ajustar según despliegue
-CSRF_TRUSTED_ORIGINS = [FRONT_ORIGIN.replace("http://", "http://").replace("https://", "https://")]
+ALLOWED_HOSTS = [
+    "localhost",
+    "127.0.0.1",
+    os.getenv("HOST", ""),
+]
 
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:4200",
+    "http://127.0.0.1:4200",
+]
+
+CORS_ALLOW_CREDENTIALS = True
+
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+    "cache-control",  # Este es el que falta
+    "ngsw-bypass",
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:4200",
+    "http://127.0.0.1:4200",
+]
+
+
+SESSION_COOKIE_DOMAIN = None
 
 
 # Application definition
 INSTALLED_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.messages',
-    'django.contrib.staticfiles',
-    'rest_framework',
-    'corsheaders',
-    'hades_app',
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+    "rest_framework",
+    "corsheaders",
+    "hades_app",
 ]
 
 MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',  # Reactivado
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    "django.middleware.security.SecurityMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",  # Reactivado
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-ROOT_URLCONF = 'server.urls'
+ROOT_URLCONF = "server.urls"
 
 TEMPLATES = [
     {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
             ],
         },
     },
 ]
 
-WSGI_APPLICATION = 'server.wsgi.application'
+WSGI_APPLICATION = "server.wsgi.application"
 
 
 # Database
@@ -98,21 +139,37 @@ DATABASES = {
     }
 }
 
+# Configuración opcional para base externa de EDS
+EDS_DB_NAME = os.getenv("EDS_DB_NAME")
+if EDS_DB_NAME:
+    DATABASES["eds"] = {
+        "ENGINE": os.getenv("EDS_DB_ENGINE", "hades_app.db_backends.postgres_compat"),
+        "NAME": EDS_DB_NAME,
+        "USER": os.getenv("EDS_DB_USER"),
+        "PASSWORD": os.getenv("EDS_DB_PASSWORD"),
+        "HOST": os.getenv("EDS_DB_HOST"),
+        "PORT": os.getenv("EDS_DB_PORT"),
+        "OPTIONS": {
+            k: v for k, v in {"sslmode": os.getenv("EDS_DB_SSLMODE")}.items() if v
+        },
+    }
+
+
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
 
 AUTH_PASSWORD_VALIDATORS = [
     {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
     },
 ]
 
@@ -120,42 +177,40 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
 
-LANGUAGE_CODE = 'es-es'  # Changed to Spanish
+LANGUAGE_CODE = "es-es"  # Changed to Spanish
 
-TIME_ZONE = 'America/Mexico_City'  # Adjust according to your timezone
+TIME_ZONE = "America/Mexico_City"  # Adjust according to your timezone
 
 USE_I18N = True
 
 USE_TZ = True
 
 
-
 # Django REST Framework configuration
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.SessionAuthentication',
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
     ],
-    'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.AllowAny',  # Cambia a IsAuthenticated en prod
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.AllowAny",  # Cambia a IsAuthenticated en prod
     ],
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 20,
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 20,
 }
-
 
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
-STATIC_URL = 'static/'
+STATIC_URL = "static/"
 
 # Media files (uploads)
-MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+MEDIA_URL = "/media/"
+MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # ============================================================================
 
@@ -165,16 +220,20 @@ CORS_ALLOW_CREDENTIALS = True
 
 # Cookies de sesión/CSRF
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SAMESITE = "Lax"  # Si API y front están en el mismo dominio/subdominio
-SESSION_COOKIE_DOMAIN = DOMAIN    # None en local; ".midominio.com" en prod
-SESSION_COOKIE_AGE = 1209600  # 2 semanas (en segundos)
-CSRF_COOKIE_HTTPONLY = False      # Angular necesita leerla (HttpClientXsrfModule)
+SESSION_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_DOMAIN = DOMAIN  # None en local; ".midominio.com" en prod
+SESSION_COOKIE_AGE = 1209600
+CSRF_COOKIE_HTTPONLY = False
 CSRF_COOKIE_SAMESITE = "Lax"
 
-if not DEBUG:
+if FORCE_HTTPS:
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
+
+
+# Ruteo de bases de datos
+DATABASE_ROUTERS = ["hades_app.db_routers.EDSRouter"] if "eds" in DATABASES else []
