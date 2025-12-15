@@ -64,6 +64,7 @@ class UsersSerializer(serializers.ModelSerializer):
         if password:
             user.set_password(password)
             user.save()
+        return user
 
 
 # Serializers base primero
