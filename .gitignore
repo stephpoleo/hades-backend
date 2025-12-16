@@ -5,6 +5,9 @@
 .env.dev
 .env.prod
 
+# Credenciales
+hades-backend-prod.json
+
 # Entorno virtual
 venv/
 env/

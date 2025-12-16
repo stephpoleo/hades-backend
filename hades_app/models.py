@@ -4,8 +4,11 @@ from django.contrib.auth.models import (
     PermissionsMixin,
     BaseUserManager,
 )
+from django.conf import settings
 
 # Create your models here.
+
+EDS_DB_TABLE_NAME = getattr(settings, "EDS_DB_TABLE", "oasis_cat_eds")
 
 
 class EDS(models.Model):
@@ -214,7 +217,7 @@ class EDS(models.Model):
 
     class Meta:
         managed = False
-        db_table = "oasis_cat_eds"
+        db_table = EDS_DB_TABLE_NAME
 
 
 # UserManager personalizado

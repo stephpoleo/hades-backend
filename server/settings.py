@@ -13,8 +13,9 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+import json
 from datetime import timedelta
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -25,30 +26,48 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # === Elegir entorno: dev o prod ===
-DJANGO_ENV = os.getenv("DJANGO_ENV", "prod")  # dev por defecto
+DEFAULT_DJANGO_ENV = "dev"
+DJANGO_ENV = (os.getenv("DJANGO_ENV") or DEFAULT_DJANGO_ENV).strip().lower()
+
+if DJANGO_ENV not in {"dev", "prod"}:
+    DJANGO_ENV = DEFAULT_DJANGO_ENV
+
+os.environ["DJANGO_ENV"] = DJANGO_ENV
 
 if DJANGO_ENV == "prod":
     env_file = BASE_DIR / ".env.prod"
 else:
     env_file = BASE_DIR / ".env.dev"
 
-load_dotenv(env_file)
+env_values = dotenv_values(env_file)
+
+
+def env(key, default=None):
+    """Devuelve variables dando prioridad al archivo del entorno seleccionado."""
+
+    if key in env_values and env_values[key] is not None:
+        return env_values[key]
+    return os.getenv(key, default)
+
+
+# override=True para que al cambiar de entorno no se queden valores previos en memoria
+load_dotenv(env_file, override=True)
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv("SECRET_KEY")
+SECRET_KEY = env("SECRET_KEY")
 
 
 # === DEV/PROD TOGGLES Y ORIGINS ===
-FORCE_HTTPS = os.getenv("FORCE_HTTPS", "false").lower() == "true"
-DEBUG = os.getenv("DEBUG", "true").lower() == "true"
-FRONT_ORIGIN = os.getenv("FRONT_ORIGIN", "http://localhost:4200")
-API_ORIGIN = os.getenv("API_ORIGIN", "http://localhost:8000")
-DOMAIN = os.getenv("COOKIE_DOMAIN", None)
+FORCE_HTTPS = env("FORCE_HTTPS", "false").lower() == "true"
+DEBUG = env("DEBUG", "true").lower() == "true"
+FRONT_ORIGIN = env("FRONT_ORIGIN", "http://localhost:4200")
+API_ORIGIN = env("API_ORIGIN", "http://localhost:8000")
+DOMAIN = env("COOKIE_DOMAIN", None)
 
 ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
-    os.getenv("HOST", ""),
+    env("HOST", ""),
 ]
 
 CORS_ALLOWED_ORIGINS = [
@@ -131,28 +150,122 @@ WSGI_APPLICATION = "server.wsgi.application"
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("DB_NAME"),
-        "USER": os.getenv("DB_USER"),
-        "PASSWORD": os.getenv("DB_PASSWORD"),
-        "HOST": os.getenv("DB_HOST"),
-        "PORT": os.getenv("DB_PORT"),
+        "NAME": env("DB_NAME"),
+        "USER": env("DB_USER"),
+        "PASSWORD": env("DB_PASSWORD"),
+        "HOST": env("DB_HOST"),
+        "PORT": env("DB_PORT"),
     }
 }
 
 # Configuración opcional para base externa de EDS
-EDS_DB_NAME = os.getenv("EDS_DB_NAME")
-if EDS_DB_NAME:
-    DATABASES["eds"] = {
-        "ENGINE": os.getenv("EDS_DB_ENGINE", "hades_app.db_backends.postgres_compat"),
-        "NAME": EDS_DB_NAME,
-        "USER": os.getenv("EDS_DB_USER"),
-        "PASSWORD": os.getenv("EDS_DB_PASSWORD"),
-        "HOST": os.getenv("EDS_DB_HOST"),
-        "PORT": os.getenv("EDS_DB_PORT"),
+EDS_DB_TABLE = env("EDS_DB_TABLE", "oasis_cat_eds")
+EDS_PROFILE_FALLBACK = env("EDS_SOURCES", "erelis,oasis")
+EDS_REQUESTED_PROFILE = (
+    (env("EDS_PROFILE") or env("EDS_ACTIVE_SOURCE") or "").strip().lower()
+)
+
+
+def _build_eds_connection(prefix):
+    """Arma la configuración de conexión tomando un prefijo de variables."""
+
+    name = env(f"{prefix}_NAME")
+    if not name:
+        return None
+
+    return {
+        "ENGINE": env(f"{prefix}_ENGINE", "hades_app.db_backends.postgres_compat"),
+        "NAME": name,
+        "USER": env(f"{prefix}_USER"),
+        "PASSWORD": env(f"{prefix}_PASSWORD"),
+        "HOST": env(f"{prefix}_HOST"),
+        "PORT": env(f"{prefix}_PORT"),
         "OPTIONS": {
-            k: v for k, v in {"sslmode": os.getenv("EDS_DB_SSLMODE")}.items() if v
+            k: v for k, v in {"sslmode": env(f"{prefix}_SSLMODE")}.items() if v
         },
     }
+
+
+def _build_eds_connection_from_json(profile):
+    """Carga la configuración desde un JSON (útil para llaves de servicio)."""
+
+    json_path = env(f"EDS_{profile.upper()}_DB_JSON")
+    if not json_path:
+        return None
+
+    candidate = Path(json_path)
+    if not candidate.is_absolute():
+        candidate = BASE_DIR / candidate
+
+    if not candidate.exists():
+        raise RuntimeError(f"EDS json no encontrado: {candidate}")
+
+    try:
+        with candidate.open("r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"EDS json inválido: {candidate}") from exc
+
+    def pick(*keys):
+        for key in keys:
+            if key in payload and payload[key] not in (None, ""):
+                return payload[key]
+        return None
+
+    config = {
+        "ENGINE": pick("engine", "ENGINE") or "hades_app.db_backends.postgres_compat",
+        "NAME": pick("name", "database", "db_name", "NAME"),
+        "USER": pick("user", "username", "client_email", "USER"),
+        "PASSWORD": pick("password", "private_key", "PASSWORD"),
+        "HOST": pick("host", "HOST"),
+        "PORT": pick("port", "PORT"),
+        "OPTIONS": {
+            k: v
+            for k, v in {"sslmode": pick("sslmode", "SSL_MODE", "ssl")}.items()
+            if v
+        },
+    }
+
+    if not config["NAME"]:
+        return None
+
+    return config
+
+
+eds_connections = {}
+
+# Compatibilidad con las variables heredadas (EDS_DB_*)
+legacy_connection = _build_eds_connection("EDS_DB")
+if legacy_connection:
+    eds_connections["legacy"] = legacy_connection
+
+raw_profile_order = [
+    s.strip().lower() for s in EDS_PROFILE_FALLBACK.split(",") if s.strip()
+]
+
+for source in raw_profile_order:
+    if source == "legacy":
+        continue
+
+    prefix = f"EDS_{source.upper()}_DB"
+    config = _build_eds_connection(prefix)
+    if not config:
+        config = _build_eds_connection_from_json(source)
+    if config:
+        eds_connections[source] = config
+
+EDS_AVAILABLE_SOURCES = tuple(eds_connections.keys())
+
+if eds_connections:
+    if EDS_REQUESTED_PROFILE and EDS_REQUESTED_PROFILE in eds_connections:
+        selected_key = EDS_REQUESTED_PROFILE
+    else:
+        selected_key = next(iter(eds_connections.keys()))
+
+    DATABASES["eds"] = eds_connections[selected_key]
+    EDS_ACTIVE_SOURCE = selected_key
+else:
+    EDS_ACTIVE_SOURCE = None
 
 
 # Password validation

@@ -308,16 +308,65 @@ hades-backend/
 
 ### Variables de entorno
 
-| Variable        | Descripción                    | Valor por defecto     |
-| --------------- | ------------------------------ | --------------------- |
-| `SECRET_KEY`    | Clave secreta de Django        | -                     |
-| `DEBUG`         | Modo debug                     | `True`                |
-| `ALLOWED_HOSTS` | Hosts permitidos               | `localhost,127.0.0.1` |
-| `DB_NAME`       | Nombre de la base de datos     | `hades_db`            |
-| `DB_USER`       | Usuario de la base de datos    | `hades_user`          |
-| `DB_PASSWORD`   | Contraseña de la base de datos | -                     |
-| `DB_HOST`       | Host de la base de datos       | `localhost`           |
-| `DB_PORT`       | Puerto de la base de datos     | `5432`                |
+| Variable        | Descripción                                                     | Valor por defecto     |
+| --------------- | --------------------------------------------------------------- | --------------------- |
+| `SECRET_KEY`    | Clave secreta de Django                                         | -                     |
+| `DEBUG`         | Modo debug                                                      | `True`                |
+| `ALLOWED_HOSTS` | Hosts permitidos                                                | `localhost,127.0.0.1` |
+| `DJANGO_ENV`    | Selecciona qué archivo `.env.<env>` cargar (`dev` o `prod`)     | `prod`                |
+| `DB_NAME`       | Nombre de la base de datos                                      | `hades_db`            |
+| `DB_USER`       | Usuario de la base de datos                                     | `hades_user`          |
+| `DB_PASSWORD`   | Contraseña de la base de datos                                  | -                     |
+| `DB_HOST`       | Host de la base de datos                                        | `localhost`           |
+| `DB_PORT`       | Puerto de la base de datos                                      | `5432`                |
+| `EDS_SOURCES`   | Perfiles EDS disponibles en orden de prioridad                  | `erelis,oasis`        |
+| `EDS_PROFILE`   | Fuerza el perfil EDS activo (`erelis`, `oasis`, `legacy`, etc.) | Primer perfil válido  |
+| `EDS_DB_TABLE`  | Nombre de la tabla remota a usar para el modelo `EDS`           | `oasis_cat_eds`       |
+
+### Perfiles de EDS (erelis / oasis)
+
+El backend puede leer EDS desde múltiples orígenes externos y permite alternar entre ellos sin tocar el código.
+
+1. Define el orden de perfiles disponibles:
+
+   ```env
+   EDS_SOURCES=erelis,oasis
+   ```
+
+2. Registra las credenciales de cada perfil:
+
+   ```env
+   # Perfil erelis (variables clásicas tomadas del .env dev/prod)
+   EDS_ERELIS_DB_NAME=erelis_db
+   EDS_ERELIS_DB_USER=erelis_user
+   EDS_ERELIS_DB_PASSWORD=secret
+   EDS_ERELIS_DB_HOST=10.0.0.10
+   EDS_ERELIS_DB_PORT=5432
+
+   # Perfil oasis (puede vivir fuera del .env)
+   EDS_OASIS_DB_JSON=secrets/oasis-sa.json
+   ```
+
+3. Selecciona el perfil activo exportando la variable o pasándola al comando `make`/`manage.py`:
+
+   ```bash
+   # Usar el perfil oasis solo para esta ejecución
+   make run-server EDS_PROFILE=oasis
+
+   # O dejarlo fijo en tu .env
+   EDS_PROFILE=oasis
+   ```
+
+Si no defines `EDS_PROFILE`, se toma el primer perfil que tenga credenciales válidas; todavía se acepta la configuración histórica tipo `EDS_DB_NAME` bajo el alias `legacy`.
+
+#### Credenciales desde JSON / Google Service Account
+
+- Apunta `EDS_<PERFIL>_DB_JSON` a un archivo JSON (ruta absoluta o relativa a la raíz del repo).
+- El JSON debe exponer al menos los campos `name`, `user`, `password`, `host` y `port`. También puedes incluir `engine` y `sslmode`.
+- Si trabajas con un Google Service Account, duplica el JSON original y añade los campos anteriores junto con tus `private_key`/`client_email`; el backend reutiliza esos valores para conectarse mediante el driver PostgreSQL.
+- El helper ignora claves vacías y valida que `name` exista antes de activar el perfil.
+
+La tabla utilizada por el modelo `EDS` puede variar entre orígenes (por ejemplo `oasis_cat_eds` vs `erelis_cat_eds`); ajústala con la variable `EDS_DB_TABLE` cuando necesites apuntar a otra vista/materialización remota.
 
 ### Django REST Framework
 
