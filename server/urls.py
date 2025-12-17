@@ -14,29 +14,17 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+
 from django.contrib import admin
-from django.urls import path, include
-from rest_framework.routers import DefaultRouter
-from hades_app import views
-
-# Router para API REST
-router = DefaultRouter()
-router.register(r'users', views.UsersViewSet)
-router.register(r'eds', views.EDSViewSet)
-router.register(r'form-templates', views.FormTemplateViewSet)
-router.register(r'work-orders', views.WorkOrderViewSet)
-router.register(r'form-questions', views.FormQuestionsViewSet)
-router.register(r'form-answers', views.FormAnswersViewSet)
-
-urlpatterns = [
-    path('admin/', admin.site.urls),
-    path('', include('hades_app.urls')),
-    # API REST endpoints
-    path('api/', include(router.urls)),
-]
-
-# Servir archivos media en desarrollo
+from django.urls import include, path
 from django.conf import settings
 from django.conf.urls.static import static
+
+
+urlpatterns = [
+    path("admin/", admin.site.urls),
+    path("", include("hades_app.urls")),
+]
+
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

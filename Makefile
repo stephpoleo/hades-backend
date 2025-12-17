@@ -1,7 +1,7 @@
 # Makefile utilitario para el backend de Hades
 # Enfocado en tareas usadas diariamente y con soporte a DJANGO_ENV
 
-.PHONY: help preflight check-venv check-env-file install migrations migrate seed create-superuser shell run-server test
+.PHONY: help preflight check-venv check-env-file install migrations migrate seed create-superuser shell run-server test lint format cloud-proxy
 
 VENV := venv
 PYTHON := $(VENV)\Scripts\python.exe
@@ -11,6 +11,10 @@ EDS_PROFILE ?= erelis
 ENV_FILE := .env.$(DJANGO_ENV)
 SET_ENV := set DJANGO_ENV=$(DJANGO_ENV) & set EDS_PROFILE=$(EDS_PROFILE) &
 MANAGE := $(SET_ENV) $(PYTHON) manage.py
+CLOUD_SQL_PROXY := cloud_sql_proxy.exe
+CLOUD_SQL_INSTANCE ?= hades-backend-prod:us-central1:hades-bd
+CLOUD_SQL_PORT ?= 5434
+CLOUD_SQL_CREDENTIALS ?= hades-backend-prod.json
 
 help:
 	@echo "Comandos disponibles (DJANGO_ENV=$(DJANGO_ENV) / EDS_PROFILE=$(EDS_PROFILE)):"
@@ -22,6 +26,9 @@ help:
 	@echo "  make shell            - Abre la shell de Django"
 	@echo "  make run-server       - Aplica migraciones y levanta el server"
 	@echo "  make test             - Ejecuta pruebas"
+	@echo "  make lint             - Ejecuta pylint sobre la app hades"
+	@echo "  make format           - Ejecuta black sobre el código"
+	@echo "  make cloud-proxy      - Abre túnel Cloud SQL (requiere cloud_sql_proxy.exe)"
 	@echo "Puedes cambiar el entorno con: make run-server DJANGO_ENV=prod"
 	@echo "Puedes alternar EDS con:    make run-server EDS_PROFILE=oasis"
 
@@ -67,3 +74,18 @@ run-server: preflight
 
 test: preflight
 	@$(MANAGE) test
+
+lint: check-venv
+	@echo "Analizando código con pylint..."
+	@$(PYTHON) -m pylint hades_app server manage.py
+
+format: check-venv
+	@echo "Formateando código con black..."
+	@$(PYTHON) -m black hades_app server manage.py
+
+cloud-proxy:
+	@if not exist $(CLOUD_SQL_CREDENTIALS) ( \
+		echo "No se encontró $(CLOUD_SQL_CREDENTIALS)." && exit 1 \
+	)
+	@echo "Iniciando Cloud SQL Proxy -> $(CLOUD_SQL_INSTANCE) en puerto $(CLOUD_SQL_PORT)"
+	@$(CLOUD_SQL_PROXY) -instances=$(CLOUD_SQL_INSTANCE)=tcp:$(CLOUD_SQL_PORT) -log_debug_stdout -credential_file=$(CLOUD_SQL_CREDENTIALS)

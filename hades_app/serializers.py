@@ -167,9 +167,11 @@ class WorkOrderSerializer(serializers.ModelSerializer):
                     "type": question.type,
                     "answer": answer_obj.answer if answer_obj else None,
                     "comments": answer_obj.comments if answer_obj else None,
-                    "image": answer_obj.image.url
-                    if answer_obj and answer_obj.image
-                    else None,
+                    "image": (
+                        answer_obj.image.url
+                        if answer_obj and answer_obj.image
+                        else None
+                    ),
                 }
             )
         return result

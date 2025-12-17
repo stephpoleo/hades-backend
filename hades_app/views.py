@@ -182,12 +182,12 @@ class EDSViewSet(viewsets.ModelViewSet):
                         "municipality": instance.municipality,
                         "zip_code": instance.zip_code,
                         "plaza_status": instance.plaza_status,
-                        "longitude": str(instance.long_eds)
-                        if instance.long_eds
-                        else None,
-                        "latitude": str(instance.latit_eds)
-                        if instance.latit_eds
-                        else None,
+                        "longitude": (
+                            str(instance.long_eds) if instance.long_eds else None
+                        ),
+                        "latitude": (
+                            str(instance.latit_eds) if instance.latit_eds else None
+                        ),
                     },
                 },
                 status=status.HTTP_200_OK,

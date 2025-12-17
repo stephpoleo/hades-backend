@@ -23,8 +23,25 @@ class EDSRouter:
             return True
         return None
 
-    def allow_migrate(self, db, app_label, model_name=None, **hints):
-        if app_label == "hades_app" and model_name == "eds":
+    def allow_migrate(
+        self,
+        db,
+        app_label,
+        model_name=None,
+        *,
+        model=None,
+        **hints,
+    ):
+        if model is not None:
+            is_eds_model = self._is_eds_model(model)
+        else:
+            is_eds_model = (
+                app_label == "hades_app"
+                and model_name is not None
+                and model_name.lower() == "eds"
+            )
+
+        if is_eds_model:
             return db == "eds"
         if db == "eds":
             return False

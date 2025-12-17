@@ -1,5 +1,3 @@
-# Modelo de usuario personalizado
-AUTH_USER_MODEL = "hades_app.Users"
 """
 Django settings for server project.
 
@@ -14,9 +12,11 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 import os
 import json
-from datetime import timedelta
 from dotenv import load_dotenv, dotenv_values
 from pathlib import Path
+
+# Modelo de usuario personalizado
+AUTH_USER_MODEL = "hades_app.Users"
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
