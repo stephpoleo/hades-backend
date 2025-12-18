@@ -379,6 +379,14 @@ class FormQuestions(models.Model):
     form_template = models.ForeignKey(
         FormTemplate, on_delete=models.CASCADE, related_name="questions"
     )
+    allow_comments = models.BooleanField(
+        default=False,
+        help_text="Permite capturar comentarios adicionales para la pregunta.",
+    )
+    allow_attachments = models.BooleanField(
+        default=False,
+        help_text="Permite adjuntar una imagen o evidencia.",
+    )
 
     class Meta:
         db_table = "FormQuestions"

@@ -86,6 +86,8 @@ class FormQuestionsSerializer(serializers.ModelSerializer):
             "question_order",
             "form_template",
             "form_template_id",
+            "allow_comments",
+            "allow_attachments",
         ]
 
 
@@ -165,6 +167,8 @@ class WorkOrderSerializer(serializers.ModelSerializer):
                     "question": question.id,
                     "question_text": question.question,
                     "type": question.type,
+                    "allow_comments": question.allow_comments,
+                    "allow_attachments": question.allow_attachments,
                     "answer": answer_obj.answer if answer_obj else None,
                     "comments": answer_obj.comments if answer_obj else None,
                     "image": (
