@@ -1,3 +1,5 @@
+from decimal import Decimal, InvalidOperation
+
 from rest_framework import serializers
 from .models import (
     Users,
@@ -114,6 +116,7 @@ class WorkOrderSerializer(serializers.ModelSerializer):
     total_questions = serializers.SerializerMethodField()
     total_answers = serializers.SerializerMethodField()
     completion_status = serializers.SerializerMethodField()
+    completion_grade = serializers.SerializerMethodField()
     answers = serializers.SerializerMethodField()
 
     class Meta:
@@ -127,6 +130,7 @@ class WorkOrderSerializer(serializers.ModelSerializer):
             "total_questions",
             "total_answers",
             "completion_status",
+            "completion_grade",
             "start_date_time",
             "end_date_time",
             "work_area_id",
@@ -156,6 +160,31 @@ class WorkOrderSerializer(serializers.ModelSerializer):
             return "completed"
         return "unknown"
 
+    def get_completion_grade(self, obj):
+        """Calcula la calificación porcentual basada en las respuestas correctas."""
+
+        if not obj.form_template:
+            return None
+
+        questions = list(obj.form_template.questions.all())
+        total_questions = len(questions)
+        if total_questions == 0:
+            return None
+
+        answers_by_question = {
+            answer.question_id: answer
+            for answer in FormAnswers.objects.filter(work_order=obj)
+        }
+
+        correct_answers = 0
+        for question in questions:
+            answer_obj = answers_by_question.get(question.id)
+            if self._is_answer_correct(question, answer_obj):
+                correct_answers += 1
+
+        percentage = (correct_answers / total_questions) * 100
+        return round(percentage, 2)
+
     def get_answers(self, obj):
         # Devuelve las respuestas por pregunta para esta orden de trabajo
         answers = FormAnswers.objects.filter(work_order=obj)
@@ -179,6 +208,31 @@ class WorkOrderSerializer(serializers.ModelSerializer):
                 }
             )
         return result
+
+    @staticmethod
+    def _is_answer_correct(question, answer_obj):
+        if not answer_obj or answer_obj.answer in (None, ""):
+            return False
+
+        raw_value = answer_obj.answer
+
+        if question.type == "boolean":
+            # Consideramos "sí"/"si"/"true"/"1" como respuesta correcta
+            if isinstance(raw_value, bool):
+                return raw_value is True
+            normalized = str(raw_value).strip().lower()
+            return normalized in {"true", "1", "si", "sí", "yes"}
+
+        if question.type == "percent":
+            normalized = str(raw_value).strip().replace("%", "").replace(",", ".")
+            try:
+                value = Decimal(normalized)
+            except (InvalidOperation, ValueError):
+                return False
+            return value == Decimal("100")
+
+        # Para otros tipos se considera correcto si existe una respuesta
+        return True
 
     form_template = FormTemplateSerializer(read_only=True)
     form_template_id = serializers.PrimaryKeyRelatedField(
