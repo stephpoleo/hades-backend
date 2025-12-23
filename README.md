@@ -15,8 +15,57 @@ API REST backend desarrollada con Django y Django REST Framework para el proyect
 - Python 3.8+
 - PostgreSQL 12+
 - pip (gestor de paquetes de Python)
+- Docker / Docker Compose (para la nueva opción de contenedores)
 
 ## 🛠️ Instalación
+
+### Opción rápida: Docker / Docker Compose
+
+```bash
+# Copia la plantilla general y crea una variante local
+cp .env.docker.example .env.docker
+cp .env.docker .env.docker.local  # ajusta valores para pruebas
+
+# Ejecuta toda la pila usando el archivo local
+ENV_FILE=.env.docker.local docker compose up --build
+
+# La API quedará en http://localhost:8000 y la DB en 5432
+```
+
+> El backend carga automáticamente `.env.<entorno>.local` si existe (por ejemplo `.env.docker.local`).
+> Para casos especiales puedes forzar un archivo exacto exportando `DJANGO_ENV_FILE=/ruta/a/archivo` antes de ejecutar `manage.py` o `docker compose`.
+
+El entrypoint del contenedor espera a que Postgres esté disponible, corre migraciones y arranca Gunicorn. Los volúmenes `postgres_data` y `media_data` persisten la base y los uploads.
+
+Cuando termines:
+
+```bash
+ENV_FILE=.env.docker.local docker compose down
+# Para limpiar datos locales
+docker compose --env-file .env.docker.local down -v
+```
+
+Para ejecutar comandos dentro del contenedor (por ejemplo crear un superusuario):
+
+```bash
+ENV_FILE=.env.docker.local docker compose exec backend python manage.py createsuperuser
+```
+
+> **¿Y después para GCP?** Usa exactamente el mismo `Dockerfile`. Cuando estés listo:
+>
+> 1. Construye la imagen dirigida a tu registro en GCP: `docker build -t gcr.io/PROJECT_ID/hades-backend:latest .`
+> 2. Súbela: `docker push gcr.io/PROJECT_ID/hades-backend:latest`.
+> 3. Despliega en Cloud Run (o tu servicio preferido) apuntando a Cloud SQL y cargando las variables reales (por ejemplo `DB_HOST=/cloudsql/INSTANCE`, `DJANGO_ENV=prod`, `SECRET_KEY` desde Secret Manager). El `docker-compose` queda reservado para pruebas locales, así que no necesitas modificarlo para producción; solo cambian las variables que pasas al servicio gestionado.
+
+### ⚠️ Requisito previo: Cloud SQL Proxy
+
+Tanto la pila Docker como los comandos del Makefile esperan llegar a la base de datos productiva mediante el Cloud SQL Proxy expuesto en tu máquina (`host.docker.internal:5434`). Antes de cualquier prueba local abre otra terminal y deja corriendo:
+
+```bash
+make cloud-proxy DJANGO_ENV=prod
+```
+
+Ese comando levanta `cloud_sql_proxy.exe` apuntando a la instancia real y debe permanecer activo mientras ejecutes `docker compose ...` o `make run-server/test/...`. Si prefieres usar una base local, ajusta tu `.env` para apuntar a ella y no ejecutes el proxy.
 
 ### Método 1: Usando Makefile (Recomendado)
 

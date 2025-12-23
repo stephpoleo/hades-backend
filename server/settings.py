@@ -27,17 +27,39 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # === Elegir entorno: dev o prod ===
 DEFAULT_DJANGO_ENV = "dev"
+ENV_FILE_MAP = {
+    "dev": ".env.dev",
+    "prod": ".env.prod",
+    "docker": ".env.docker",
+}
+
 DJANGO_ENV = (os.getenv("DJANGO_ENV") or DEFAULT_DJANGO_ENV).strip().lower()
 
-if DJANGO_ENV not in {"dev", "prod"}:
+if DJANGO_ENV not in ENV_FILE_MAP:
     DJANGO_ENV = DEFAULT_DJANGO_ENV
 
 os.environ["DJANGO_ENV"] = DJANGO_ENV
 
-if DJANGO_ENV == "prod":
-    env_file = BASE_DIR / ".env.prod"
-else:
-    env_file = BASE_DIR / ".env.dev"
+
+def _resolve_env_path(filename: str) -> Path:
+    candidate = Path(filename)
+    if not candidate.is_absolute():
+        candidate = BASE_DIR / candidate
+    return candidate
+
+
+env_file_candidates = []
+
+explicit_env_file = os.getenv("DJANGO_ENV_FILE")
+if explicit_env_file:
+    env_file_candidates.append(_resolve_env_path(explicit_env_file))
+
+base_env_file = _resolve_env_path(ENV_FILE_MAP[DJANGO_ENV])
+local_env_file = base_env_file.with_name(f"{base_env_file.name}.local")
+
+env_file_candidates.extend([local_env_file, base_env_file])
+
+env_file = next((path for path in env_file_candidates if path.exists()), base_env_file)
 
 env_values = dotenv_values(env_file)
 
