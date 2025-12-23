@@ -2,18 +2,10 @@ import logging
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.middleware.csrf import get_token
 from django.contrib.auth import authenticate, login, logout
-from django.contrib.auth.decorators import login_required
-from django.utils.decorators import method_decorator
-from django.views.decorators.http import require_POST
-from django.contrib.auth import get_user_model
 from django.http import JsonResponse
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework import status
-
-from django.http import JsonResponse
-from rest_framework import viewsets, status
-from rest_framework.decorators import api_view, action
+from rest_framework.decorators import api_view, permission_classes, action
+from rest_framework import status, viewsets
 from rest_framework.response import Response
 
 from .models import (
@@ -26,6 +18,7 @@ from .models import (
     Permissions,
     Roles,
 )
+from django.db import transaction
 from django.db.models import Count, Max
 from .serializers import (
     UsersSerializer,
@@ -591,6 +584,29 @@ class FormTemplateViewSet(viewsets.ModelViewSet):
     queryset = FormTemplate.objects.all()
     serializer_class = FormTemplateSerializer
 
+    @action(detail=False, methods=["delete"], url_path="clear-all")
+    def clear_all(self, request):
+        """Elimina todas las plantillas, preguntas, ordenes de trabajo y respuestas asociadas."""
+        with transaction.atomic():
+            answers_deleted, _ = FormAnswers.objects.all().delete()
+            work_orders_deleted, _ = WorkOrder.objects.all().delete()
+            questions_deleted, _ = FormQuestions.objects.all().delete()
+            templates_deleted, _ = FormTemplate.objects.all().delete()
+
+        return Response(
+            {
+                "success": True,
+                "message": "Plantillas, preguntas, ordenes de trabajo y respuestas eliminadas.",
+                "deleted": {
+                    "templates": templates_deleted,
+                    "questions": questions_deleted,
+                    "work_orders": work_orders_deleted,
+                    "answers": answers_deleted,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
 
 # WorkOrder ViewSet
 class WorkOrderViewSet(viewsets.ModelViewSet):
@@ -605,6 +621,25 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
         if user_id:
             queryset = queryset.filter(user_id=user_id)
         return queryset
+
+    @action(detail=False, methods=["delete"], url_path="clear-all")
+    def clear_all(self, request):
+        """Elimina todas las ordenes de trabajo y respuestas asociadas."""
+        with transaction.atomic():
+            answers_deleted, _ = FormAnswers.objects.all().delete()
+            work_orders_deleted, _ = WorkOrder.objects.all().delete()
+
+        return Response(
+            {
+                "success": True,
+                "message": "Ordenes de trabajo y respuestas eliminadas.",
+                "deleted": {
+                    "work_orders": work_orders_deleted,
+                    "answers": answers_deleted,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 # FormQuestions ViewSet
@@ -713,6 +748,55 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
             return Response(serializer.data, status=200)
         else:
             return super().create(request, *args, **kwargs)
+
+
+@api_view(["DELETE"])
+def clear_form_templates(request):
+    """
+    Endpoint directo para borrar todas las plantillas, preguntas, work orders y respuestas.
+    Útil si el router no expone correctamente la acción del ViewSet.
+    """
+    with transaction.atomic():
+        answers_deleted, _ = FormAnswers.objects.all().delete()
+        work_orders_deleted, _ = WorkOrder.objects.all().delete()
+        questions_deleted, _ = FormQuestions.objects.all().delete()
+        templates_deleted, _ = FormTemplate.objects.all().delete()
+
+    return Response(
+        {
+            "success": True,
+            "message": "Plantillas, preguntas, ordenes de trabajo y respuestas eliminadas.",
+            "deleted": {
+                "templates": templates_deleted,
+                "questions": questions_deleted,
+                "work_orders": work_orders_deleted,
+                "answers": answers_deleted,
+            },
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["DELETE"])
+def clear_work_orders(request):
+    """
+    Endpoint directo para borrar todas las work orders y sus respuestas.
+    """
+    with transaction.atomic():
+        answers_deleted, _ = FormAnswers.objects.all().delete()
+        work_orders_deleted, _ = WorkOrder.objects.all().delete()
+
+    return Response(
+        {
+            "success": True,
+            "message": "Ordenes de trabajo y respuestas eliminadas.",
+            "deleted": {
+                "work_orders": work_orders_deleted,
+                "answers": answers_deleted,
+            },
+        },
+        status=status.HTTP_200_OK,
+    )
 
 
 class RolesViewSet(viewsets.ModelViewSet):

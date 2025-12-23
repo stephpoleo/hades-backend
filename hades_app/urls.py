@@ -16,6 +16,8 @@ router.register(r"permissions", views.PermissionsViewSet)
 urlpatterns = [
     # API REST endpoints
     path("api/", include(router.urls)),
+    path("api/form-templates/clear-all/", views.clear_form_templates, name="clear_form_templates"),
+    path("api/work-orders/clear-all/", views.clear_work_orders, name="clear_work_orders"),
     # Auth endpoints para SPA/PWA
     path("api/auth/csrf/", views.csrf, name="csrf"),
     path("api/auth/login/", views.login_view, name="login"),

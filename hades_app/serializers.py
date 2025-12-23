@@ -113,6 +113,10 @@ class FormTemplateSerializer(serializers.ModelSerializer):
 class WorkOrderSerializer(serializers.ModelSerializer):
     form_template = FormTemplateSerializer()
     user = UsersSerializer(source="get_user", read_only=True)
+    user_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
+    eds_id = serializers.CharField(
+        write_only=True, required=False, allow_null=True, allow_blank=True
+    )
     total_questions = serializers.SerializerMethodField()
     total_answers = serializers.SerializerMethodField()
     completion_status = serializers.SerializerMethodField()
@@ -126,6 +130,8 @@ class WorkOrderSerializer(serializers.ModelSerializer):
             "date",
             "status",
             "form_template",
+            "form_template_id",
+            "eds",
             "user",
             "total_questions",
             "total_answers",
@@ -134,6 +140,8 @@ class WorkOrderSerializer(serializers.ModelSerializer):
             "start_date_time",
             "end_date_time",
             "work_area_id",
+            "user_id",
+            "eds_id",
             "answers",
         ]
 
@@ -255,9 +263,24 @@ class WorkOrderSerializer(serializers.ModelSerializer):
         except EDS.DoesNotExist:
             return None
 
-    class Meta:
-        model = WorkOrder
-        fields = "__all__"
+    def create(self, validated_data):
+        """
+        Ensure user_id is set either from payload or authenticated request.
+        Avoids inserting NULL into the NOT NULL column.
+        """
+        request = self.context.get("request")
+        user_id = validated_data.get("user_id")
+
+        if not user_id and request and getattr(request, "user", None):
+            if request.user.is_authenticated:
+                validated_data["user_id"] = getattr(request.user, "id_usr_pk", None)
+
+        if not validated_data.get("user_id"):
+            raise serializers.ValidationError(
+                {"user_id": "user_id es requerido para la orden de trabajo."}
+            )
+
+        return super().create(validated_data)
 
 
 class FormAnswersSerializer(serializers.ModelSerializer):
