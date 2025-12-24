@@ -1,6 +1,7 @@
 # Variables de entorno
 .env
 .env.*
+.env.docker
 
 # Credenciales
 hades-backend-prod.json

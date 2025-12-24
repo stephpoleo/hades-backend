@@ -11,6 +11,9 @@ gcloud==0.18.3
 googleapis-common-protos==1.72.0
 gunicorn==23.0.0
 httplib2==0.31.0
+drf-yasg==1.21.7
+whitenoise==6.8.2
+setuptools==75.6.0
 isort==7.0.0
 mccabe==0.7.0
 mypy_extensions==1.1.0

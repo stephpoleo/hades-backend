@@ -265,6 +265,14 @@ La API y dashboard están disponibles en:
 - **API Órdenes:** `http://localhost:8000/api/work-orders/` - JSON con órdenes
 - **API Completa:** `http://localhost:8000/api/dashboard/` - JSON con todos los datos
 
+### Documentaci¢n Swagger/Redoc
+
+- Swagger UI: `http://localhost:8000/api/swagger/`
+- Redoc: `http://localhost:8000/api/redoc/`
+- Esquema JSON: `http://localhost:8000/api/schema.json`
+
+En Docker los est ticos se sirven con WhiteNoise y `collectstatic` se ejecuta en el entrypoint, as¡ que basta con `docker compose up --build` para tener la UI. En local, instala dependencias (`pip install -r requirements.txt`) y corre `python manage.py runserver`.
+
 ### Datos de prueba
 
 El proyecto incluye datos dummy que se insertan automáticamente con:

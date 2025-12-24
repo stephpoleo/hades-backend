@@ -22,5 +22,6 @@ done
 printf '\nDatabase is available, continuing...\n'
 
 python manage.py migrate --noinput
+python manage.py collectstatic --noinput
 
 exec "$@"
