@@ -101,12 +101,12 @@ class FormTemplateSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "name",
-            "description",
-            "created_at",
-            "updated_at",
-            "is_active",
-            "questions",
-        ]
+        "description",
+        "created_at",
+        "updated_at",
+        "is_active",
+        "questions",
+    ]
 
 
 # Ahora los serializers que los usan
@@ -128,7 +128,6 @@ class WorkOrderSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "date",
-            "status",
             "form_template",
             "form_template_id",
             "eds",
@@ -161,12 +160,12 @@ class WorkOrderSerializer(serializers.ModelSerializer):
         total_q = self.get_total_questions(obj)
         total_a = self.get_total_answers(obj)
         if total_a == 0:
+            return "pending"
+        if total_q > 0 and total_a < total_q:
             return "draft"
-        elif total_a < total_q:
-            return "incomplete"
-        elif total_a == total_q and total_q > 0:
+        if total_q > 0 and total_a >= total_q:
             return "completed"
-        return "unknown"
+        return "pending"
 
     def get_completion_grade(self, obj):
         """Calcula la calificación porcentual basada en las respuestas correctas."""

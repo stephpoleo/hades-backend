@@ -358,18 +358,35 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # ============================================================================
 
 # === CORS Y COOKIES SEGÚN RECETA ===
-CORS_ALLOWED_ORIGINS = [FRONT_ORIGIN]
+CORS_ALLOWED_ORIGINS = [
+    FRONT_ORIGIN,
+    FRONT_ORIGIN.replace("http://", "https://"),
+    API_ORIGIN,
+    API_ORIGIN.replace("http://", "https://"),
+]
 CORS_ALLOW_CREDENTIALS = True
 
 # Cookies de sesión/CSRF
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SAMESITE = "Lax"
+# Cookies deben viajar entre frontend/back distintos -> SameSite=None + Secure
+SESSION_COOKIE_SAMESITE = "None"
+SESSION_COOKIE_SECURE = True
 SESSION_COOKIE_DOMAIN = DOMAIN  # None en local; ".midominio.com" en prod
 SESSION_COOKIE_AGE = 1209600
 CSRF_COOKIE_HTTPONLY = False
-CSRF_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_SAMESITE = "None"
+CSRF_COOKIE_SECURE = True
+CSRF_TRUSTED_ORIGINS = [
+    FRONT_ORIGIN,
+    FRONT_ORIGIN.replace("http://", "https://"),
+    API_ORIGIN,
+    API_ORIGIN.replace("http://", "https://"),
+]
 
 if FORCE_HTTPS:
+    # Cloud Run envía X-Forwarded-Proto=https; indicamos a Django que confíe en él
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    USE_X_FORWARDED_HOST = True
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True

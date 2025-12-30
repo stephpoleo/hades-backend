@@ -57,6 +57,72 @@ ENV_FILE=.env.docker.local docker compose exec backend python manage.py createsu
 > 2. Súbela: `docker push gcr.io/PROJECT_ID/hades-backend:latest`.
 > 3. Despliega en Cloud Run (o tu servicio preferido) apuntando a Cloud SQL y cargando las variables reales (por ejemplo `DB_HOST=/cloudsql/INSTANCE`, `DJANGO_ENV=prod`, `SECRET_KEY` desde Secret Manager). El `docker-compose` queda reservado para pruebas locales, así que no necesitas modificarlo para producción; solo cambian las variables que pasas al servicio gestionado.
 
+## Despliegue en GCP (Cloud Run + Cloud SQL)
+
+### Prerrequisitos
+- Proyecto: `hades-backend-prod`
+- APIs habilitadas: `run.googleapis.com`, `artifactregistry.googleapis.com`, `cloudbuild.googleapis.com`, `sqladmin.googleapis.com`, `secretmanager.googleapis.com`
+- Instancia Cloud SQL: `hades-backend-prod:us-central1:hades-bd`
+- Service Account de Cloud Run con roles `roles/secretmanager.secretAccessor` y `roles/cloudsql.client`
+
+### Secretos recomendados (Secret Manager)
+- `SECRET_KEY`
+- `DB_PASSWORD`
+- `DB_USER`
+- `EDS_ERELIS_DB_PASSWORD`
+
+### Vars de entorno (Cloud Run)
+- `DJANGO_ENV=prod`
+- `DEBUG=False`
+- `FORCE_HTTPS=true`
+- `HOST=<tu servicio>.run.app` (añade tu dominio cuando lo tengas)
+- `DB_HOST=/cloudsql/hades-backend-prod:us-central1:hades-bd`
+- `DB_PORT=5432`
+- `DB_NAME=postgres` (usa el nombre real de tu DB)
+- `EDS_SOURCES=erelis`
+- `EDS_PROFILE=erelis`
+- `EDS_DB_TABLE=oasis_cat_eds` (ajusta según tu tabla EDS)
+- `EDS_ERELIS_DB_ENGINE=hades_app.db_backends.postgres_compat`
+- `EDS_ERELIS_DB_NAME=postgres`
+- `EDS_ERELIS_DB_USER=erelis_admin`
+- `EDS_ERELIS_DB_HOST=erelis-prod.postgres.database.azure.com`
+- `EDS_ERELIS_DB_PORT=5432`
+- `EDS_ERELIS_DB_SSLMODE=require`
+- `FRONT_ORIGIN=http://localhost:8080`
+- `API_ORIGIN=http://localhost:8000`
+
+### Build + push (Artifact Registry)
+```bash
+gcloud config set project hades-backend-prod
+gcloud builds submit --tag us-central1-docker.pkg.dev/hades-backend-prod/hades/hades-backend:latest .
+```
+
+### Deploy / Update (Cloud Run)
+```bash
+gcloud run deploy hades-backend \
+  --image us-central1-docker.pkg.dev/hades-backend-prod/hades/hades-backend:latest \
+  --region us-central1 \
+  --platform managed \
+  --allow-unauthenticated \
+  --add-cloudsql-instances hades-backend-prod:us-central1:hades-bd \
+  --set-env-vars DJANGO_ENV=prod,DEBUG=False,FORCE_HTTPS=true,HOST=hades-backend-694277248400.us-central1.run.app,DB_HOST=/cloudsql/hades-backend-prod:us-central1:hades-bd,DB_PORT=5432,DB_NAME=postgres,EDS_SOURCES=erelis,EDS_PROFILE=erelis,EDS_DB_TABLE=oasis_cat_eds,EDS_ERELIS_DB_ENGINE=hades_app.db_backends.postgres_compat,EDS_ERELIS_DB_NAME=postgres,EDS_ERELIS_DB_USER=erelis_admin,EDS_ERELIS_DB_HOST=erelis-prod.postgres.database.azure.com,EDS_ERELIS_DB_PORT=5432,EDS_ERELIS_DB_SSLMODE=require,FRONT_ORIGIN=http://localhost:8080,API_ORIGIN=http://localhost:8000 \
+  --set-secrets SECRET_KEY=SECRET_KEY:latest,DB_PASSWORD=DB_PASSWORD:latest,DB_USER=DB_USER:latest,EDS_ERELIS_DB_PASSWORD=EDS_ERELIS_DB_PASSWORD:latest \
+  --memory 512Mi --cpu 1 --min-instances 1 \
+  --port 8000
+```
+Notas:
+- Cambia `HOST` por tu URL `.run.app` y tu dominio cuando lo tengas.
+- Ajusta `DB_NAME` si usas otro nombre de base.
+- Si quieres acceso restringido, quita `--allow-unauthenticated` y asigna `run.invoker` a quien corresponda.
+
+### Redirección raíz
+`/` redirige a `/api/swagger/` (definido en `server/urls.py`).
+
+### Troubleshooting rápido
+- 400 Bad Request: agrega el host correcto a `HOST` y redeploy.
+- Bucles HTTPS: `FORCE_HTTPS=true` y `SECURE_PROXY_SSL_HEADER` activo (ya en settings).
+- Conexión DB: rol `cloudsql.client`, socket `/cloudsql/...`, `DB_NAME` existente, usuario/clave correctos.
+
 ### ⚠️ Requisito previo: Cloud SQL Proxy
 
 Tanto la pila Docker como los comandos del Makefile esperan llegar a la base de datos productiva mediante el Cloud SQL Proxy expuesto en tu máquina (`host.docker.internal:5434`). Antes de cualquier prueba local abre otra terminal y deja corriendo:
