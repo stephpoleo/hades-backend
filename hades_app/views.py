@@ -1,11 +1,19 @@
 import logging
+import os
+from django.conf import settings
+import base64
+import uuid
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.middleware.csrf import get_token
 from django.contrib.auth import authenticate, login, logout
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
+from google.cloud import storage
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework import status, viewsets
+from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 
 from .models import (
@@ -615,6 +623,21 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
     queryset = WorkOrder.objects.all()
     serializer_class = WorkOrderSerializer
 
+    def list(self, request, *args, **kwargs):
+        logger = logging.getLogger("django")
+        try:
+            return super().list(request, *args, **kwargs)
+        except Exception as exc:
+            logger.exception("Error GET /api/work-orders/")
+            return Response({"detail": str(exc)}, status=500)
+
+    # Aseguramos que kwargs (ej. image) lleguen al .save()
+    def perform_create(self, serializer, **kwargs):
+        serializer.save(**kwargs)
+
+    def perform_update(self, serializer, **kwargs):
+        serializer.save(**kwargs)
+
     def get_queryset(self):
         queryset = WorkOrder.objects.all()
         user_id = self.request.query_params.get("user_id")
@@ -652,6 +675,9 @@ class FormQuestionsViewSet(viewsets.ModelViewSet):
 
 # FormAnswers ViewSet
 class FormAnswersViewSet(viewsets.ModelViewSet):
+    # Asegura que DRF procese multipart/form-data y lea request.FILES
+    parser_classes = (MultiPartParser, FormParser)
+
     @action(detail=False, methods=["get"], url_path="by-workorder")
     def by_workorder(self, request):
         """
@@ -699,55 +725,248 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
     queryset = FormAnswers.objects.all()
     serializer_class = FormAnswersSerializer
 
+    def list(self, request, *args, **kwargs):
+        logger = logging.getLogger("django")
+        try:
+            return super().list(request, *args, **kwargs)
+        except Exception as exc:
+            logger.exception("Error GET /api/form-answers/")
+            return Response({"detail": str(exc)}, status=500)
+
     def create(self, request, *args, **kwargs):
-        data = request.data
-        # Si es un array, procesar cada respuesta
-        if isinstance(data, list):
-            results = []
-            errors = []
-            for item in data:
-                question_id = item.get("question_id")
-                work_order_id = item.get("work_order_id")
-                if not question_id or not work_order_id:
-                    errors.append(
-                        {
-                            "detail": "question_id y work_order_id son requeridos.",
-                            "data": item,
-                        }
+        logger = logging.getLogger("django")
+        try:
+            data = request.data
+            # 1) Intenta obtener archivo desde request.FILES (image/attachment/file)
+            image_file = None
+            for key in ["image", "attachment", "file"]:
+                if key in request.FILES:
+                    image_file = request.FILES[key]
+                    break
+            if not image_file and request.FILES:
+                # Si vino con otro nombre, toma el primero
+                image_file = next(iter(request.FILES.values()))
+
+            # 2) Si hay archivo y no está en data, injértalo
+            if image_file and not data.get("image"):
+                try:
+                    data = data.copy()
+                except Exception:
+                    pass
+                data["image"] = image_file
+
+            # 3) Si no hay archivo pero viene un string/base64 en data["image"], decodificarlo
+            if (
+                not image_file
+                and data.get("image")
+                and isinstance(data.get("image"), str)
+            ):
+                img_str = data.get("image")
+                file_name = f"{uuid.uuid4().hex}.jpg"
+                try:
+                    if img_str.startswith("data:") and "," in img_str:
+                        header, encoded = img_str.split(",", 1)
+                        if ";base64" in header:
+                            img_str = encoded
+                            try:
+                                ext = header.split("/")[1].split(";")[0]
+                                file_name = f"{uuid.uuid4().hex}.{ext}"
+                            except Exception:
+                                pass
+                    decoded_file = base64.b64decode(img_str)
+                    image_file = ContentFile(decoded_file, name=file_name)
+                    try:
+                        data = data.copy()
+                    except Exception:
+                        pass
+                    data["image"] = image_file
+                except Exception as decode_exc:
+                    logger.error(
+                        "No se pudo decodificar image base64: %s",
+                        decode_exc,
+                        exc_info=True,
                     )
-                    continue
-                instance = FormAnswers.objects.filter(
-                    question_id=question_id, work_order_id=work_order_id
-                ).first()
-                if instance:
-                    serializer = self.get_serializer(instance, data=item, partial=True)
-                    serializer.is_valid(raise_exception=True)
-                    self.perform_update(serializer)
-                    results.append(serializer.data)
-                else:
-                    serializer = self.get_serializer(data=item)
-                    serializer.is_valid(raise_exception=True)
-                    self.perform_create(serializer)
-                    results.append(serializer.data)
-            status_code = 200 if not errors else 207
-            return Response({"results": results, "errors": errors}, status=status_code)
-        # Si es un solo objeto, procesar como antes
-        question_id = data.get("question_id")
-        work_order_id = data.get("work_order_id")
-        if not question_id or not work_order_id:
-            return Response(
-                {"detail": "question_id y work_order_id son requeridos."}, status=400
+            # Si no hay archivo pero viene un string base64 en data["image"], decodificarlo
+            if (
+                not image_file
+                and data.get("image")
+                and isinstance(data.get("image"), str)
+            ):
+                img_str = data.get("image")
+                file_name = f"{uuid.uuid4().hex}.jpg"
+                try:
+                    if img_str.startswith("data:") and "," in img_str:
+                        header, encoded = img_str.split(",", 1)
+                        if ";base64" in header:
+                            img_str = encoded
+                            try:
+                                ext = header.split("/")[1].split(";")[0]
+                                file_name = f"{uuid.uuid4().hex}.{ext}"
+                            except Exception:
+                                pass
+                    decoded_file = base64.b64decode(img_str)
+                    image_file = ContentFile(decoded_file, name=file_name)
+                    try:
+                        data = data.copy()
+                    except Exception:
+                        pass
+                    data["image"] = image_file
+                except Exception as decode_exc:
+                    logger.error(
+                        "No se pudo decodificar image base64: %s",
+                        decode_exc,
+                        exc_info=True,
+                    )
+            logger.error(
+                "POST /api/form-answers/ files=%s data_keys=%s image_type=%s storage=%s bucket=%s media_url=%s",
+                list(request.FILES.keys()),
+                list(getattr(data, "keys", lambda: [])()),
+                type(data.get("image")),
+                getattr(settings, "DEFAULT_FILE_STORAGE", None),
+                getattr(settings, "GS_BUCKET_NAME", None),
+                getattr(settings, "MEDIA_URL", None),
             )
-        instance = FormAnswers.objects.filter(
-            question_id=question_id, work_order_id=work_order_id
-        ).first()
-        if instance:
-            serializer = self.get_serializer(instance, data=data, partial=True)
-            serializer.is_valid(raise_exception=True)
-            self.perform_update(serializer)
-            return Response(serializer.data, status=200)
-        else:
-            return super().create(request, *args, **kwargs)
+            # Si es un array, procesar cada respuesta
+            if isinstance(data, list):
+                results = []
+                errors = []
+                for item in data:
+                    question_id = item.get("question_id")
+                    work_order_id = item.get("work_order_id")
+                    if not question_id or not work_order_id:
+                        errors.append(
+                            {
+                                "detail": "question_id y work_order_id son requeridos.",
+                                "data": item,
+                            }
+                        )
+                        continue
+                    instance = FormAnswers.objects.filter(
+                        question_id=question_id, work_order_id=work_order_id
+                    ).first()
+                    if instance:
+                        serializer = self.get_serializer(
+                            instance, data=item, partial=True
+                        )
+                        serializer.is_valid(raise_exception=True)
+                        self.perform_update(serializer)
+                        results.append(serializer.data)
+                    else:
+                        serializer = self.get_serializer(data=item)
+                        serializer.is_valid(raise_exception=True)
+                        self.perform_create(serializer)
+                        results.append(serializer.data)
+                status_code = 200 if not errors else 207
+                return Response(
+                    {"results": results, "errors": errors}, status=status_code
+                )
+            # Si es un solo objeto, procesar como antes
+            question_id = data.get("question_id")
+            work_order_id = data.get("work_order_id")
+            if not question_id or not work_order_id:
+                return Response(
+                    {"detail": "question_id y work_order_id son requeridos."},
+                    status=400,
+                )
+            instance = FormAnswers.objects.filter(
+                question_id=question_id, work_order_id=work_order_id
+            ).first()
+            if instance:
+                serializer = self.get_serializer(instance, data=data, partial=True)
+                serializer.is_valid(raise_exception=True)
+                logger.error(
+                    "FormAnswers update validated keys=%s image=%s type=%s name=%s size=%s storage=%s bucket=%s media_url=%s",
+                    list(serializer.validated_data.keys()),
+                    bool(serializer.validated_data.get("image")),
+                    type(serializer.validated_data.get("image")),
+                    getattr(serializer.validated_data.get("image"), "name", None),
+                    getattr(serializer.validated_data.get("image"), "size", None),
+                    getattr(settings, "DEFAULT_FILE_STORAGE", None),
+                    getattr(settings, "GS_BUCKET_NAME", None),
+                    getattr(settings, "MEDIA_URL", None),
+                )
+                obj = serializer.save(image=image_file or serializer.validated_data.get("image"))
+                if image_file and not obj.image:
+                    ext = (image_file.name or "upload").split(".")[-1]
+                    filename = f"form_answers/{uuid.uuid4().hex}.{ext}"
+                    saved_path = default_storage.save(filename, image_file)
+                    obj.image.name = saved_path
+                    obj.save(update_fields=["image"])
+                return Response(FormAnswersSerializer(obj).data, status=200)
+            else:
+                serializer = self.get_serializer(data=data)
+                serializer.is_valid(raise_exception=True)
+                logger.error(
+                    "FormAnswers create validated keys=%s image=%s type=%s name=%s size=%s storage=%s bucket=%s media_url=%s",
+                    list(serializer.validated_data.keys()),
+                    bool(serializer.validated_data.get("image")),
+                    type(serializer.validated_data.get("image")),
+                    getattr(serializer.validated_data.get("image"), "name", None),
+                    getattr(serializer.validated_data.get("image"), "size", None),
+                    getattr(settings, "DEFAULT_FILE_STORAGE", None),
+                    getattr(settings, "GS_BUCKET_NAME", None),
+                    getattr(settings, "MEDIA_URL", None),
+                )
+                obj = serializer.save(image=image_file or serializer.validated_data.get("image"))
+                if image_file and not obj.image:
+                    ext = (image_file.name or "upload").split(".")[-1]
+                    filename = f"form_answers/{uuid.uuid4().hex}.{ext}"
+                    saved_path = default_storage.save(filename, image_file)
+                    obj.image.name = saved_path
+                    obj.save(update_fields=["image"])
+                headers = self.get_success_headers(serializer.data)
+                return Response(FormAnswersSerializer(obj).data, status=201, headers=headers)
+        except Exception as exc:
+            logger.exception(
+                "Error en /api/form-answers/ payload_keys=%s files=%s",
+                list(getattr(request.data, "keys", lambda: [])()),
+                list(request.FILES.keys()),
+            )
+            return Response({"detail": str(exc)}, status=500)
+
+    # Aceptar kwargs (ej. image) cuando se fuerza el guardado
+    def perform_create(self, serializer, **kwargs):
+        serializer.save(**kwargs)
+
+    def perform_update(self, serializer, **kwargs):
+        serializer.save(**kwargs)
+
+    @action(detail=True, methods=["get"], url_path="attachment")
+    def attachment(self, request, pk=None):
+        answer = self.get_object()
+        if not answer.image:
+            return Response(
+                {"detail": "Esta respuesta no tiene adjunto."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        logger = logging.getLogger("django")
+        try:
+            client = storage.Client(credentials=settings.GS_CREDENTIALS)
+            bucket = client.bucket(settings.GS_BUCKET_NAME)
+            blob = bucket.blob(answer.image.name)
+            payload = blob.download_as_bytes()
+            content_type = blob.content_type or "application/octet-stream"
+        except Exception as exc:
+            logger.error(
+                "[FormAnswersViewSet.attachment] No se pudo descargar %s: %s",
+                answer.image.name,
+                exc,
+                exc_info=True,
+            )
+            return Response(
+                {
+                    "detail": "No se pudo descargar el adjunto desde el almacenamiento.",
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        response = HttpResponse(payload, content_type=content_type)
+        response["Content-Length"] = str(len(payload))
+        response["Content-Disposition"] = (
+            f'inline; filename="{os.path.basename(answer.image.name)}"'
+        )
+        return response
 
 
 @api_view(["DELETE"])

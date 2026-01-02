@@ -14,6 +14,62 @@ import os
 import json
 from dotenv import load_dotenv, dotenv_values
 from pathlib import Path
+from google.cloud import secretmanager
+from google.oauth2 import service_account
+import logging
+
+
+# Función para leer el secreto y guardar el archivo temporalmente
+def get_gcp_credentials_file():
+    client = secretmanager.SecretManagerServiceClient()
+    secret_name = (
+        "projects/hades-backend-prod/secrets/GCP_STORAGE_CREDENTIALS/versions/latest"
+    )
+    response = client.access_secret_version(request={"name": secret_name})
+    credentials_json = response.payload.data.decode("UTF-8")
+    temp_path = "/tmp/gcp_storage_credentials.json"
+    with open(temp_path, "w") as f:
+        f.write(credentials_json)
+    return temp_path
+
+
+GS_BUCKET_NAME = "hades-media"
+DEFAULT_FILE_STORAGE = "storages.backends.gcloud.GoogleCloudStorage"
+MEDIA_URL = f"https://storage.googleapis.com/{GS_BUCKET_NAME}/"
+GS_CREDENTIALS = service_account.Credentials.from_service_account_file(
+    get_gcp_credentials_file()
+)
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "[{levelname}] {asctime} {name}: {message}",
+            "style": "{",
+        },
+        "simple": {
+            "format": "[{levelname}] {name}: {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": "ERROR",  # Cambia a 'WARNING' si quieres ver más mensajes
+            "propagate": True,
+        },
+    },
+}
 
 # Modelo de usuario personalizado
 AUTH_USER_MODEL = "hades_app.Users"
@@ -61,19 +117,24 @@ env_file_candidates.extend([local_env_file, base_env_file])
 
 env_file = next((path for path in env_file_candidates if path.exists()), base_env_file)
 
-env_values = dotenv_values(env_file)
-
 
 def env(key, default=None):
     """Devuelve variables dando prioridad al archivo del entorno seleccionado."""
 
+    # Prioridad a variables de entorno inyectadas en runtime (Cloud Run)
+    runtime_val = os.getenv(key, None)
+    if runtime_val is not None:
+        return runtime_val
     if key in env_values and env_values[key] is not None:
         return env_values[key]
-    return os.getenv(key, default)
+    return default
 
 
-# override=True para que al cambiar de entorno no se queden valores previos en memoria
-load_dotenv(env_file, override=True)
+env_values = dotenv_values(env_file)
+
+# Mantener las variables de entorno del runtime; no sobrescribirlas con el .env
+# (por ejemplo, en Cloud Run). Por eso override=False.
+load_dotenv(env_file, override=False)
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = env("SECRET_KEY")
@@ -135,6 +196,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "storages",
     "corsheaders",
     "drf_yasg",
     "hades_app",
@@ -346,9 +408,13 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
-# Media files (uploads)
-MEDIA_URL = "/media/"
-MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+# Media files (uploads) -> siempre GCS (evitamos filesystem)
+GS_BUCKET_NAME = env("GS_BUCKET_NAME", "hades-media")
+# MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+DEFAULT_FILE_STORAGE = "storages.backends.gcloud.GoogleCloudStorage"
+MEDIA_URL = f"https://storage.googleapis.com/{GS_BUCKET_NAME}/"
+GS_QUERYSTRING_AUTH = True  # URLs firmadas
+GS_QUERYSTRING_EXPIRE = 3600  # 1 hora
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -397,3 +463,15 @@ if FORCE_HTTPS:
 
 # Ruteo de bases de datos
 DATABASE_ROUTERS = ["hades_app.db_routers.EDSRouter"] if "eds" in DATABASES else []
+
+logging.error(
+    f"[GCP_STORAGE] GS_CREDENTIALS: {GS_CREDENTIALS}, GS_BUCKET_NAME: {GS_BUCKET_NAME}, DEFAULT_FILE_STORAGE: {DEFAULT_FILE_STORAGE}"
+)
+try:
+    logging.error(
+        f"[GCP_STORAGE] Credenciales existen en /tmp: {os.path.exists('/tmp/gcp_storage_credentials.json')}"
+    )
+except Exception as e:
+    logging.error(
+        f"[GCP_STORAGE] Error verificando /tmp/gcp_storage_credentials.json: {e}"
+    )

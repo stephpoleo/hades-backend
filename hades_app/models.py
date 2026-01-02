@@ -387,6 +387,11 @@ class FormQuestions(models.Model):
         default=False,
         help_text="Permite adjuntar una imagen o evidencia.",
     )
+    expected_value = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Valor de referencia esperado para evaluar la respuesta (opcional).",
+    )
 
     class Meta:
         db_table = "FormQuestions"

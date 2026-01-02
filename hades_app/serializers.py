@@ -1,6 +1,14 @@
+import logging
+import uuid
 from decimal import Decimal, InvalidOperation
+from datetime import timedelta
+
+from google.cloud import storage
+from google.cloud.storage import _signing
 
 from rest_framework import serializers
+from django.conf import settings
+from django.urls import reverse
 from .models import (
     Users,
     EDS,
@@ -11,6 +19,123 @@ from .models import (
     Roles,
     Permissions,
 )
+
+try:
+    from google.cloud import storage
+except ImportError:  # pragma: no cover
+    storage = None
+
+
+def _build_signed_url(image_field):
+    """
+    Genera una URL firmada temporal para un ImageField almacenado en GCS.
+    Retorna None si no hay bucket o no se puede firmar.
+    """
+    if not image_field or not getattr(image_field, "name", None):
+        return None
+    # Primero intenta con el storage configurado (si firma automáticamente)
+    try:
+        candidate = image_field.storage.url(image_field.name)
+        if candidate and "X-Goog-" in candidate:
+            return candidate
+    except Exception as exc:
+        logging.getLogger("django").warning(
+            "Signed URL via storage.url failed: %s", exc, exc_info=True
+        )
+        pass
+
+    logger = logging.getLogger("django")
+    bucket_name = getattr(settings, "GS_BUCKET_NAME", None)
+    credentials = getattr(settings, "GS_CREDENTIALS", None)
+    project_id = getattr(settings, "GS_PROJECT_ID", None)
+    if not project_id and credentials is not None:
+        project_id = getattr(credentials, "project_id", None)
+    scopes = ["https://www.googleapis.com/auth/devstorage.read_only"]
+    if credentials and hasattr(credentials, "with_scopes"):
+        credentials = credentials.with_scopes(scopes)
+    if not bucket_name or storage is None:
+        return None
+    try:
+        client = (
+            storage.Client(project=project_id, credentials=credentials)
+            if project_id
+            else storage.Client(credentials=credentials)
+        )
+    except Exception as exc:
+        logger.error(
+            "[SignedURL] No se pudo crear el cliente de GCS: %s", exc, exc_info=True
+        )
+        return None
+    object_name = image_field.name
+    blob = client.bucket(bucket_name).blob(object_name)
+    try:
+        try:
+            return blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(hours=1),
+                method="GET",
+                credentials=credentials,
+            )
+        except TypeError:
+            logger.warning(
+                "[SignedURL] generate_signed_url no acepta credentials explícitos, reintentando sin parámetro"
+            )
+            return blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(hours=1),
+                method="GET",
+            )
+    except Exception as exc:
+        logger.error(
+            "[SignedURL] Error firmando %s con blob.generate_signed_url: %s",
+            object_name,
+            exc,
+            exc_info=True,
+        )
+        manual_url = None
+        if credentials is not None:
+            try:
+                manual_url = _signing.generate_signed_url_v4(
+                    credentials=credentials,
+                    request_method="GET",
+                    bucket_name=bucket_name,
+                    blob_name=object_name,
+                    expiration=timedelta(hours=1),
+                )
+                logger.error(
+                    "[SignedURL] URL firmada generada vía fallback manual para %s",
+                    object_name,
+                )
+            except Exception as manual_exc:
+                logger.error(
+                    "[SignedURL] Fallback manual también falló para %s: %s",
+                    object_name,
+                    manual_exc,
+                    exc_info=True,
+                )
+        if manual_url:
+            return manual_url
+        return None
+
+
+def _build_backend_attachment_url(instance, request):
+    if not request:
+        return None
+    try:
+        return request.build_absolute_uri(
+            reverse("formanswers-attachment", args=[instance.pk])
+        )
+    except Exception:  # pragma: no cover
+        return None
+
+
+def _build_media_url(image_field):
+    bucket = getattr(settings, "GS_BUCKET_NAME", None)
+    if not bucket or not image_field or not getattr(image_field, "name", None):
+        return None
+    path = image_field.name.lstrip("/")
+    path = "/".join(segment for segment in path.split("/") if segment)
+    return f"https://storage.googleapis.com/{bucket}/{path}"
 
 
 # Serializer para EDS
@@ -90,7 +215,27 @@ class FormQuestionsSerializer(serializers.ModelSerializer):
             "form_template_id",
             "allow_comments",
             "allow_attachments",
+            "expected_value",
         ]
+
+    def create(self, validated_data):
+        # Asegura que expected_value se guarde aunque sea null o string vacío
+        expected_value = validated_data.get("expected_value", None)
+        instance = FormQuestions.objects.create(**validated_data)
+        if expected_value is not None:
+            instance.expected_value = expected_value
+            instance.save(update_fields=["expected_value"])
+        return instance
+
+    def update(self, instance, validated_data):
+        # Asegura que expected_value se actualice correctamente
+        expected_value = validated_data.get("expected_value", None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        if expected_value is not None:
+            instance.expected_value = expected_value
+        instance.save()
+        return instance
 
 
 class FormTemplateSerializer(serializers.ModelSerializer):
@@ -101,12 +246,12 @@ class FormTemplateSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "name",
-        "description",
-        "created_at",
-        "updated_at",
-        "is_active",
-        "questions",
-    ]
+            "description",
+            "created_at",
+            "updated_at",
+            "is_active",
+            "questions",
+        ]
 
 
 # Ahora los serializers que los usan
@@ -194,10 +339,22 @@ class WorkOrderSerializer(serializers.ModelSerializer):
 
     def get_answers(self, obj):
         # Devuelve las respuestas por pregunta para esta orden de trabajo
-        answers = FormAnswers.objects.filter(work_order=obj)
+        answers = (
+            FormAnswers.objects.filter(work_order=obj)
+            .select_related("question", "work_order")
+            .order_by("question_id", "-id")
+        )
+        serialized_answers = {}
+        for answer in answers:
+            if answer.question_id in serialized_answers:
+                continue  # Already captured the latest entry for this question
+            serialized_answers[answer.question_id] = FormAnswersSerializer(
+                answer, context=self.context
+            ).data
+
         result = []
         for question in obj.form_template.questions.all():
-            answer_obj = answers.filter(question=question).first()
+            serialized = serialized_answers.get(question.id) or {}
             result.append(
                 {
                     "question": question.id,
@@ -205,13 +362,11 @@ class WorkOrderSerializer(serializers.ModelSerializer):
                     "type": question.type,
                     "allow_comments": question.allow_comments,
                     "allow_attachments": question.allow_attachments,
-                    "answer": answer_obj.answer if answer_obj else None,
-                    "comments": answer_obj.comments if answer_obj else None,
-                    "image": (
-                        answer_obj.image.url
-                        if answer_obj and answer_obj.image
-                        else None
-                    ),
+                    "answer": serialized.get("answer"),
+                    "comments": serialized.get("comments"),
+                    "image": serialized.get("image"),
+                    "attachment": serialized.get("attachment"),
+                    "has_attachment": serialized.get("has_attachment", False),
                 }
             )
         return result
@@ -222,6 +377,12 @@ class WorkOrderSerializer(serializers.ModelSerializer):
             return False
 
         raw_value = answer_obj.answer
+
+        expected = getattr(question, "expected_value", None)
+        if expected not in (None, ""):
+            return WorkOrderSerializer._compare_with_expected(
+                question.type, expected, raw_value
+            )
 
         if question.type == "boolean":
             # Consideramos "sí"/"si"/"true"/"1" como respuesta correcta
@@ -240,6 +401,50 @@ class WorkOrderSerializer(serializers.ModelSerializer):
 
         # Para otros tipos se considera correcto si existe una respuesta
         return True
+
+    @staticmethod
+    def _compare_with_expected(qtype, expected_value, raw_value):
+        """
+        Compara la respuesta contra el expected_value según el tipo de pregunta.
+        Si no se puede normalizar, se considera incorrecta.
+        """
+
+        if raw_value in (None, ""):
+            return False
+
+        if qtype == "boolean":
+
+            def _to_bool(val):
+                if isinstance(val, bool):
+                    return val
+                normalized = str(val).strip().lower()
+                if normalized in {"true", "1", "si", "sí", "yes"}:
+                    return True
+                if normalized in {"false", "0", "no"}:
+                    return False
+                return None
+
+            exp_bool = _to_bool(expected_value)
+            ans_bool = _to_bool(raw_value)
+            return (
+                exp_bool is not None and ans_bool is not None and exp_bool == ans_bool
+            )
+
+        if qtype in {"number", "percent"}:
+
+            def _to_decimal(val):
+                try:
+                    normalized = str(val).strip().replace("%", "").replace(",", ".")
+                    return Decimal(normalized)
+                except (InvalidOperation, ValueError):
+                    return None
+
+            exp_dec = _to_decimal(expected_value)
+            ans_dec = _to_decimal(raw_value)
+            return exp_dec is not None and ans_dec is not None and exp_dec >= ans_dec
+
+        # Texto u otros tipos: comparar normalizado
+        return str(raw_value).strip().lower() == str(expected_value).strip().lower()
 
     form_template = FormTemplateSerializer(read_only=True)
     form_template_id = serializers.PrimaryKeyRelatedField(
@@ -283,6 +488,85 @@ class WorkOrderSerializer(serializers.ModelSerializer):
 
 
 class FormAnswersSerializer(serializers.ModelSerializer):
+    def _upload_image_to_gcs(self, instance, image, logger):
+        question_id = getattr(instance, "question_id", None) or getattr(
+            instance, "question", None
+        )
+        work_order_id = getattr(instance, "work_order_id", None) or getattr(
+            instance, "work_order", None
+        )
+        question_id = (
+            question_id.id
+            if hasattr(question_id, "id")
+            else question_id
+            if question_id
+            else "unknown"
+        )
+        work_order_id = (
+            work_order_id.id
+            if hasattr(work_order_id, "id")
+            else work_order_id
+            if work_order_id
+            else "unknown"
+        )
+        base_name = getattr(image, "name", "attachment")
+        filename = (
+            f"form_answers/wo_{work_order_id}/q_{question_id}/"
+            f"{uuid.uuid4().hex}_{base_name}"
+        )
+        client = storage.Client(credentials=settings.GS_CREDENTIALS)
+        bucket = client.bucket(settings.GS_BUCKET_NAME)
+        blob = bucket.blob(filename)
+        image.seek(0)
+        blob.upload_from_file(
+            image,
+            content_type=getattr(image, "content_type", "application/octet-stream"),
+        )
+        instance.image = filename
+        instance.save(update_fields=["image"])
+        try:
+            instance.refresh_from_db(fields=["image"])
+        except Exception:
+            pass
+        logger.error(
+            "[FormAnswersSerializer] Imagen subida manualmente a GCS: %s", filename
+        )
+        return filename
+
+    def create(self, validated_data):
+        logger = logging.getLogger("django")
+        image = validated_data.pop("image", None)
+        logger.error(
+            f"[FormAnswersSerializer.create] validated_data keys: {list(validated_data.keys())}, image: {image}, type: {type(image)}"
+        )
+        instance = super(FormAnswersSerializer, self).create(validated_data)
+        if image:
+            try:
+                self._upload_image_to_gcs(instance, image, logger)
+            except Exception as exc:
+                logger.error(
+                    f"[FormAnswersSerializer.create] ERROR al subir imagen manualmente a GCS: {exc}",
+                    exc_info=True,
+                )
+        else:
+            logger.error(
+                "[FormAnswersSerializer.create] No se recibió imagen para guardar."
+            )
+        return instance
+
+    def update(self, instance, validated_data):
+        image = validated_data.pop("image", None)
+        instance = super(FormAnswersSerializer, self).update(instance, validated_data)
+        if image:
+            try:
+                self._upload_image_to_gcs(instance, image, logging.getLogger("django"))
+            except Exception as exc:
+                logging.getLogger("django").error(
+                    f"[FormAnswersSerializer.update] ERROR al subir imagen manualmente a GCS: {exc}",
+                    exc_info=True,
+                )
+        return instance
+
     question = FormQuestionsSerializer(read_only=True)
     question_id = serializers.PrimaryKeyRelatedField(
         queryset=FormQuestions.objects.all(),
@@ -326,9 +610,100 @@ class FormAnswersSerializer(serializers.ModelSerializer):
         }
 
     def to_representation(self, instance):
+        logger = logging.getLogger("django")
         rep = super().to_representation(instance)
         rep["question_id"] = instance.question.id if instance.question else None
         rep["work_order_id"] = instance.work_order.id if instance.work_order else None
+        attachment_url = None
+        logger.error(
+            f"[DEBUG-FA] instance.id={getattr(instance, 'id', None)} image={getattr(instance, 'image', None)} image.name={getattr(getattr(instance, 'image', None), 'name', None)}"
+        )
+        if instance.image:
+            try:
+                attachment_url = _build_signed_url(instance.image)
+                logger.error(f"[DEBUG-FA] _build_signed_url result: {attachment_url}")
+            except Exception as exc:  # pragma: no cover
+                logger.exception("Error firmando URL de imagen (FA): %s", exc)
+                attachment_url = None
+            if not attachment_url:
+                attachment_url = _build_media_url(instance.image)
+                logger.error(f"[DEBUG-FA] _build_media_url result: {attachment_url}")
+                if attachment_url:
+                    logger.info(
+                        "[FormAnswersSerializer] URL pública usada para %s",
+                        getattr(instance.image, "name", None),
+                    )
+            if not attachment_url:
+                logger.error(
+                    "[FormAnswersSerializer] Usando endpoint backend como fallback para imagen %s",
+                    getattr(instance.image, "name", None),
+                )
+                attachment_url = _build_backend_attachment_url(
+                    instance, self.context.get("request")
+                )
+                logger.error(
+                    f"[DEBUG-FA] _build_backend_attachment_url result: {attachment_url}"
+                )
+        else:
+            # Intentar inferir el path de la imagen desde GCS si sabemos work_order y question
+            logger.error(
+                "[DEBUG-FA] instance.image is None or empty, intentando buscar en GCS"
+            )
+            wo = getattr(instance, "work_order_id", None) or getattr(
+                instance, "work_order", None
+            )
+            q = getattr(instance, "question_id", None) or getattr(
+                instance, "question", None
+            )
+            wo_id = wo.id if hasattr(wo, "id") else wo
+            q_id = q.id if hasattr(q, "id") else q
+            bucket_name = getattr(settings, "GS_BUCKET_NAME", None)
+            gcs_client = None
+            if bucket_name and storage is not None and wo_id and q_id:
+                try:
+                    gcs_client = storage.Client(
+                        credentials=getattr(settings, "GS_CREDENTIALS", None)
+                    )
+                    bucket = gcs_client.bucket(bucket_name)
+                    prefix = f"form_answers/wo_{wo_id}/q_{q_id}/"
+                    blobs = list(bucket.list_blobs(prefix=prefix))
+                    logger.error(
+                        f"[DEBUG-FA] blobs encontrados en {prefix}: {[b.name for b in blobs]}"
+                    )
+                    if blobs:
+                        # Tomar el más reciente por updated o el primero
+                        blob = sorted(
+                            blobs,
+                            key=lambda b: b.updated or b.time_created,
+                            reverse=True,
+                        )[0]
+
+                        class FakeImage:
+                            def __init__(self, name):
+                                self.name = name
+                                self.storage = bucket
+
+                        fake_image = FakeImage(blob.name)
+                        attachment_url = _build_signed_url(fake_image)
+                        logger.error(
+                            f"[DEBUG-FA] _build_signed_url (fake) result: {attachment_url}"
+                        )
+                        if not attachment_url:
+                            attachment_url = _build_media_url(fake_image)
+                            logger.error(
+                                f"[DEBUG-FA] _build_media_url (fake) result: {attachment_url}"
+                            )
+                except Exception as exc:
+                    logger.error(
+                        f"[DEBUG-FA] Error buscando imagen en GCS: {exc}", exc_info=True
+                    )
+            rep["image"] = attachment_url
+            rep["attachment"] = attachment_url
+            rep["has_attachment"] = bool(attachment_url)
+            return rep
+        rep["image"] = attachment_url
+        rep["attachment"] = attachment_url
+        rep["has_attachment"] = bool(attachment_url)
         return rep
 
 

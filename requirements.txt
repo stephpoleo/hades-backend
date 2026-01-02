@@ -29,7 +29,7 @@ pyasn1==0.6.1
 pyasn1_modules==0.4.2
 pylint==4.0.4
 pyparsing==3.2.5
-python-dotenv==1.1.1
+python-dotenv>=1.0
 pytokens==0.3.0
 rsa==4.9.1
 six==1.17.0
@@ -37,3 +37,6 @@ sqlparse==0.5.3
 tomlkit==0.13.3
 typing_extensions==4.15.0
 tzdata==2025.2
+django-storages>=1.13
+google-cloud-storage>=2.0.0
+google-cloud-secret-manager
