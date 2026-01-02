@@ -14,29 +14,38 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
-from django.contrib import admin
-from django.urls import path, include
-from rest_framework.routers import DefaultRouter
-from hades_app import views
 
-# Router para API REST
-router = DefaultRouter()
-router.register(r'users', views.UsersViewSet)
-router.register(r'eds', views.EDSViewSet)
-router.register(r'form-templates', views.FormTemplateViewSet)
-router.register(r'work-orders', views.WorkOrderViewSet)
-router.register(r'form-questions', views.FormQuestionsViewSet)
-router.register(r'form-answers', views.FormAnswersViewSet)
+from django.contrib import admin
+from django.urls import include, path
+from django.views.generic import RedirectView
+from rest_framework import permissions
+from drf_yasg.views import get_schema_view
+from drf_yasg import openapi
+
+schema_view = get_schema_view(
+    openapi.Info(
+        title="Hades API",
+        default_version="v1",
+        description="Documentación de los endpoints del proyecto Hades.",
+    ),
+    public=True,
+    permission_classes=[permissions.AllowAny],
+)
+
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
-    path('', include('hades_app.urls')),
-    # API REST endpoints
-    path('api/', include(router.urls)),
+    path("admin/", admin.site.urls),
+    path("", RedirectView.as_view(url="/api/swagger/", permanent=False)),
+    path("", include("hades_app.urls")),
+    path(
+        "api/swagger/",
+        schema_view.with_ui("swagger", cache_timeout=0),
+        name="schema-swagger-ui",
+    ),
+    path(
+        "api/redoc/", schema_view.with_ui("redoc", cache_timeout=0), name="schema-redoc"
+    ),
+    path(
+        "api/schema.json", schema_view.without_ui(cache_timeout=0), name="schema-json"
+    ),
 ]
-
-# Servir archivos media en desarrollo
-from django.conf import settings
-from django.conf.urls.static import static
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

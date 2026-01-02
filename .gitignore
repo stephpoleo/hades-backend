@@ -1,7 +1,10 @@
 # Variables de entorno
 .env
-.env.local
-.env.*.local
+.env.*
+.env.docker
+
+# Credenciales
+hades-backend-prod.json
 
 # Entorno virtual
 venv/

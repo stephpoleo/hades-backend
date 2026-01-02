@@ -108,6 +108,7 @@ CREATE TABLE "FormQuestions" (
 	"type" VARCHAR(65),
 	"id_form_template_fk" INTEGER,
 	"question_order" INTEGER,
+	"expected_value" VARCHAR(255),
 	PRIMARY KEY("id_question_form_pk")
 );
 

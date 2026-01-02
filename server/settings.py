@@ -1,5 +1,3 @@
-# Modelo de usuario personalizado
-AUTH_USER_MODEL = 'hades_app.Users'
 """
 Django settings for server project.
 
@@ -13,10 +11,68 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
-from datetime import timedelta
-from dotenv import load_dotenv
+import json
+from dotenv import load_dotenv, dotenv_values
 from pathlib import Path
-load_dotenv()
+from google.cloud import secretmanager
+from google.oauth2 import service_account
+import logging
+
+
+# Función para leer el secreto y guardar el archivo temporalmente
+def get_gcp_credentials_file():
+    client = secretmanager.SecretManagerServiceClient()
+    secret_name = (
+        "projects/hades-backend-prod/secrets/GCP_STORAGE_CREDENTIALS/versions/latest"
+    )
+    response = client.access_secret_version(request={"name": secret_name})
+    credentials_json = response.payload.data.decode("UTF-8")
+    temp_path = "/tmp/gcp_storage_credentials.json"
+    with open(temp_path, "w") as f:
+        f.write(credentials_json)
+    return temp_path
+
+
+GS_BUCKET_NAME = "hades-media"
+DEFAULT_FILE_STORAGE = "storages.backends.gcloud.GoogleCloudStorage"
+MEDIA_URL = f"https://storage.googleapis.com/{GS_BUCKET_NAME}/"
+GS_CREDENTIALS = service_account.Credentials.from_service_account_file(
+    get_gcp_credentials_file()
+)
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "[{levelname}] {asctime} {name}: {message}",
+            "style": "{",
+        },
+        "simple": {
+            "format": "[{levelname}] {name}: {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": "ERROR",  # Cambia a 'WARNING' si quieres ver más mensajes
+            "propagate": True,
+        },
+    },
+}
+
+# Modelo de usuario personalizado
+AUTH_USER_MODEL = "hades_app.Users"
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -25,63 +81,157 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
+# === Elegir entorno: dev o prod ===
+DEFAULT_DJANGO_ENV = "dev"
+ENV_FILE_MAP = {
+    "dev": ".env.dev",
+    "prod": ".env.prod",
+    "docker": ".env.docker",
+}
+
+DJANGO_ENV = (os.getenv("DJANGO_ENV") or DEFAULT_DJANGO_ENV).strip().lower()
+
+if DJANGO_ENV not in ENV_FILE_MAP:
+    DJANGO_ENV = DEFAULT_DJANGO_ENV
+
+os.environ["DJANGO_ENV"] = DJANGO_ENV
+
+
+def _resolve_env_path(filename: str) -> Path:
+    candidate = Path(filename)
+    if not candidate.is_absolute():
+        candidate = BASE_DIR / candidate
+    return candidate
+
+
+env_file_candidates = []
+
+explicit_env_file = os.getenv("DJANGO_ENV_FILE")
+if explicit_env_file:
+    env_file_candidates.append(_resolve_env_path(explicit_env_file))
+
+base_env_file = _resolve_env_path(ENV_FILE_MAP[DJANGO_ENV])
+local_env_file = base_env_file.with_name(f"{base_env_file.name}.local")
+
+env_file_candidates.extend([local_env_file, base_env_file])
+
+env_file = next((path for path in env_file_candidates if path.exists()), base_env_file)
+
+
+def env(key, default=None):
+    """Devuelve variables dando prioridad al archivo del entorno seleccionado."""
+
+    # Prioridad a variables de entorno inyectadas en runtime (Cloud Run)
+    runtime_val = os.getenv(key, None)
+    if runtime_val is not None:
+        return runtime_val
+    if key in env_values and env_values[key] is not None:
+        return env_values[key]
+    return default
+
+
+env_values = dotenv_values(env_file)
+
+# Mantener las variables de entorno del runtime; no sobrescribirlas con el .env
+# (por ejemplo, en Cloud Run). Por eso override=False.
+load_dotenv(env_file, override=False)
+
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv("SECRET_KEY")
+SECRET_KEY = env("SECRET_KEY")
 
 
 # === DEV/PROD TOGGLES Y ORIGINS ===
-DEBUG = os.getenv("DEBUG", "true").lower() == "true"
-FRONT_ORIGIN = os.getenv("FRONT_ORIGIN", "http://localhost:4200")
-API_ORIGIN = os.getenv("API_ORIGIN", "http://localhost:8000")
-DOMAIN = os.getenv("COOKIE_DOMAIN", None)  # e.g. ".midominio.com" en prod
+FORCE_HTTPS = env("FORCE_HTTPS", "false").lower() == "true"
+DEBUG = env("DEBUG", "true").lower() == "true"
+FRONT_ORIGIN = env("FRONT_ORIGIN", "http://localhost:4200")
+API_ORIGIN = env("API_ORIGIN", "http://localhost:8000")
+DOMAIN = env("COOKIE_DOMAIN", None)
 
-ALLOWED_HOSTS = ["localhost", "127.0.0.1", os.getenv("HOST", "")]  # Puedes ajustar según despliegue
-CSRF_TRUSTED_ORIGINS = [FRONT_ORIGIN.replace("http://", "http://").replace("https://", "https://")]
+ALLOWED_HOSTS = [
+    "localhost",
+    "127.0.0.1",
+    env("HOST", ""),
+]
 
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:4200",
+    "http://127.0.0.1:4200",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+]
+
+CORS_ALLOW_CREDENTIALS = True
+
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+    "cache-control",  # Este es el que falta
+    "ngsw-bypass",
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:4200",
+    "http://127.0.0.1:4200",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+]
+
+
+SESSION_COOKIE_DOMAIN = None
 
 
 # Application definition
 INSTALLED_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.messages',
-    'django.contrib.staticfiles',
-    'rest_framework',
-    'corsheaders',
-    'hades_app',
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+    "rest_framework",
+    "storages",
+    "corsheaders",
+    "drf_yasg",
+    "hades_app",
 ]
 
 MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',  # Reactivado
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",  # Reactivado
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-ROOT_URLCONF = 'server.urls'
+ROOT_URLCONF = "server.urls"
 
 TEMPLATES = [
     {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
             ],
         },
     },
 ]
 
-WSGI_APPLICATION = 'server.wsgi.application'
+WSGI_APPLICATION = "server.wsgi.application"
 
 
 # Database
@@ -90,29 +240,139 @@ WSGI_APPLICATION = 'server.wsgi.application'
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("DB_NAME"),
-        "USER": os.getenv("DB_USER"),
-        "PASSWORD": os.getenv("DB_PASSWORD"),
-        "HOST": os.getenv("DB_HOST"),
-        "PORT": os.getenv("DB_PORT"),
+        "NAME": env("DB_NAME"),
+        "USER": env("DB_USER"),
+        "PASSWORD": env("DB_PASSWORD"),
+        "HOST": env("DB_HOST"),
+        "PORT": env("DB_PORT"),
     }
 }
+
+# Configuración opcional para base externa de EDS
+EDS_DB_TABLE = env("EDS_DB_TABLE", "oasis_cat_eds")
+EDS_PROFILE_FALLBACK = env("EDS_SOURCES", "erelis,oasis")
+EDS_REQUESTED_PROFILE = (
+    (env("EDS_PROFILE") or env("EDS_ACTIVE_SOURCE") or "").strip().lower()
+)
+
+
+def _build_eds_connection(prefix):
+    """Arma la configuración de conexión tomando un prefijo de variables."""
+
+    name = env(f"{prefix}_NAME")
+    if not name:
+        return None
+
+    return {
+        "ENGINE": env(f"{prefix}_ENGINE", "hades_app.db_backends.postgres_compat"),
+        "NAME": name,
+        "USER": env(f"{prefix}_USER"),
+        "PASSWORD": env(f"{prefix}_PASSWORD"),
+        "HOST": env(f"{prefix}_HOST"),
+        "PORT": env(f"{prefix}_PORT"),
+        "OPTIONS": {
+            k: v for k, v in {"sslmode": env(f"{prefix}_SSLMODE")}.items() if v
+        },
+    }
+
+
+def _build_eds_connection_from_json(profile):
+    """Carga la configuración desde un JSON (útil para llaves de servicio)."""
+
+    json_path = env(f"EDS_{profile.upper()}_DB_JSON")
+    if not json_path:
+        return None
+
+    candidate = Path(json_path)
+    if not candidate.is_absolute():
+        candidate = BASE_DIR / candidate
+
+    if not candidate.exists():
+        raise RuntimeError(f"EDS json no encontrado: {candidate}")
+
+    try:
+        with candidate.open("r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"EDS json inválido: {candidate}") from exc
+
+    def pick(*keys):
+        for key in keys:
+            if key in payload and payload[key] not in (None, ""):
+                return payload[key]
+        return None
+
+    config = {
+        "ENGINE": pick("engine", "ENGINE") or "hades_app.db_backends.postgres_compat",
+        "NAME": pick("name", "database", "db_name", "NAME"),
+        "USER": pick("user", "username", "client_email", "USER"),
+        "PASSWORD": pick("password", "private_key", "PASSWORD"),
+        "HOST": pick("host", "HOST"),
+        "PORT": pick("port", "PORT"),
+        "OPTIONS": {
+            k: v
+            for k, v in {"sslmode": pick("sslmode", "SSL_MODE", "ssl")}.items()
+            if v
+        },
+    }
+
+    if not config["NAME"]:
+        return None
+
+    return config
+
+
+eds_connections = {}
+
+# Compatibilidad con las variables heredadas (EDS_DB_*)
+legacy_connection = _build_eds_connection("EDS_DB")
+if legacy_connection:
+    eds_connections["legacy"] = legacy_connection
+
+raw_profile_order = [
+    s.strip().lower() for s in EDS_PROFILE_FALLBACK.split(",") if s.strip()
+]
+
+for source in raw_profile_order:
+    if source == "legacy":
+        continue
+
+    prefix = f"EDS_{source.upper()}_DB"
+    config = _build_eds_connection(prefix)
+    if not config:
+        config = _build_eds_connection_from_json(source)
+    if config:
+        eds_connections[source] = config
+
+EDS_AVAILABLE_SOURCES = tuple(eds_connections.keys())
+
+if eds_connections:
+    if EDS_REQUESTED_PROFILE and EDS_REQUESTED_PROFILE in eds_connections:
+        selected_key = EDS_REQUESTED_PROFILE
+    else:
+        selected_key = next(iter(eds_connections.keys()))
+
+    DATABASES["eds"] = eds_connections[selected_key]
+    EDS_ACTIVE_SOURCE = selected_key
+else:
+    EDS_ACTIVE_SOURCE = None
+
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
 
 AUTH_PASSWORD_VALIDATORS = [
     {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
     },
 ]
 
@@ -120,61 +380,98 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
 
-LANGUAGE_CODE = 'es-es'  # Changed to Spanish
+LANGUAGE_CODE = "es-es"  # Changed to Spanish
 
-TIME_ZONE = 'America/Mexico_City'  # Adjust according to your timezone
+TIME_ZONE = "America/Mexico_City"  # Adjust according to your timezone
 
 USE_I18N = True
 
 USE_TZ = True
 
 
-
 # Django REST Framework configuration
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.SessionAuthentication',
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
     ],
-    'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.AllowAny',  # Cambia a IsAuthenticated en prod
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.AllowAny",  # Cambia a IsAuthenticated en prod
     ],
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 20,
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 20,
 }
-
 
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
-STATIC_URL = 'static/'
+STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
-# Media files (uploads)
-MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+# Media files (uploads) -> siempre GCS (evitamos filesystem)
+GS_BUCKET_NAME = env("GS_BUCKET_NAME", "hades-media")
+# MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+DEFAULT_FILE_STORAGE = "storages.backends.gcloud.GoogleCloudStorage"
+MEDIA_URL = f"https://storage.googleapis.com/{GS_BUCKET_NAME}/"
+GS_QUERYSTRING_AUTH = True  # URLs firmadas
+GS_QUERYSTRING_EXPIRE = 3600  # 1 hora
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # ============================================================================
 
 # === CORS Y COOKIES SEGÚN RECETA ===
-CORS_ALLOWED_ORIGINS = [FRONT_ORIGIN]
+CORS_ALLOWED_ORIGINS = [
+    FRONT_ORIGIN,
+    FRONT_ORIGIN.replace("http://", "https://"),
+    API_ORIGIN,
+    API_ORIGIN.replace("http://", "https://"),
+]
 CORS_ALLOW_CREDENTIALS = True
 
 # Cookies de sesión/CSRF
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SAMESITE = "Lax"  # Si API y front están en el mismo dominio/subdominio
-SESSION_COOKIE_DOMAIN = DOMAIN    # None en local; ".midominio.com" en prod
-SESSION_COOKIE_AGE = 1209600  # 2 semanas (en segundos)
-CSRF_COOKIE_HTTPONLY = False      # Angular necesita leerla (HttpClientXsrfModule)
-CSRF_COOKIE_SAMESITE = "Lax"
+# Cookies deben viajar entre frontend/back distintos -> SameSite=None + Secure
+SESSION_COOKIE_SAMESITE = "None"
+SESSION_COOKIE_SECURE = True
+SESSION_COOKIE_DOMAIN = DOMAIN  # None en local; ".midominio.com" en prod
+SESSION_COOKIE_AGE = 1209600
+CSRF_COOKIE_HTTPONLY = False
+CSRF_COOKIE_SAMESITE = "None"
+CSRF_COOKIE_SECURE = True
+CSRF_TRUSTED_ORIGINS = [
+    FRONT_ORIGIN,
+    FRONT_ORIGIN.replace("http://", "https://"),
+    API_ORIGIN,
+    API_ORIGIN.replace("http://", "https://"),
+]
 
-if not DEBUG:
+if FORCE_HTTPS:
+    # Cloud Run envía X-Forwarded-Proto=https; indicamos a Django que confíe en él
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    USE_X_FORWARDED_HOST = True
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
+
+
+# Ruteo de bases de datos
+DATABASE_ROUTERS = ["hades_app.db_routers.EDSRouter"] if "eds" in DATABASES else []
+
+logging.error(
+    f"[GCP_STORAGE] GS_CREDENTIALS: {GS_CREDENTIALS}, GS_BUCKET_NAME: {GS_BUCKET_NAME}, DEFAULT_FILE_STORAGE: {DEFAULT_FILE_STORAGE}"
+)
+try:
+    logging.error(
+        f"[GCP_STORAGE] Credenciales existen en /tmp: {os.path.exists('/tmp/gcp_storage_credentials.json')}"
+    )
+except Exception as e:
+    logging.error(
+        f"[GCP_STORAGE] Error verificando /tmp/gcp_storage_credentials.json: {e}"
+    )

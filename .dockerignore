@@ -1,0 +1,18 @@
+# Files and directories ignored by Docker context
+.git
+.gitignore
+__pycache__
+*.py[cod]
+*.log
+*.sqlite3
+*.swp
+.DS_Store
+.env*
+venv/
+.mypy_cache/
+.pytest_cache/
+.vscode/
+.idea/
+node_modules/
+media/
+staticfiles/
