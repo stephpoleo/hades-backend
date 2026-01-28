@@ -12,11 +12,15 @@ EDS_DB_TABLE_NAME = getattr(settings, "EDS_DB_TABLE", "oasis_cat_eds")
 
 
 class EDS(models.Model):
+    """
+    Modelo EDS - Lee desde oasis_cat_eds en erelis.
+    El campo id_eds_pk (cod_eds) es la clave_eds - identificador único de la estación.
+    """
     id_eds_pk = models.CharField(
         primary_key=True,
         max_length=10,
         db_column="cod_eds",
-        help_text="Identificador oficial de la estación en la base externa.",
+        help_text="Identificador oficial de la estación (clave_eds).",
     )
     sap_code = models.CharField(
         max_length=14,
@@ -219,6 +223,9 @@ class EDS(models.Model):
         managed = False
         db_table = EDS_DB_TABLE_NAME
 
+    def __str__(self):
+        return f"{self.id_eds_pk} - {self.name}" if self.id_eds_pk and self.name else self.name or str(self.id_eds_pk)
+
 
 # UserManager personalizado
 class UserManager(BaseUserManager):
@@ -247,15 +254,13 @@ class Users(AbstractBaseUser, PermissionsMixin):
     is_staff = models.BooleanField(default=False)
     is_superuser = models.BooleanField(default=False)
     id_role_fk = models.IntegerField(null=True, blank=True)  # Referencia a Roles
-    id_eds_fk = models.CharField(
-        max_length=10,
+    clave_eds_fk = models.CharField(
+        max_length=20,
         null=True,
         blank=True,
-        help_text="Código de la EDS en la base externa",
+        help_text="Clave de la EDS asignada (cod_eds en erelis)",
     )
-    id_work_area_fk = models.IntegerField(
-        null=True, blank=True
-    )  # Referencia a WorkArea
+    id_work_area_fk = models.IntegerField(null=True, blank=True)  # Referencia a WorkArea
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["name"]
@@ -316,11 +321,11 @@ class WorkOrder(models.Model):
     date = models.DateTimeField(help_text="Fecha y hora de la orden de trabajo")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
     user_id = models.IntegerField()
-    eds_id = models.CharField(
-        max_length=10,
+    clave_eds = models.CharField(
+        max_length=20,
         blank=True,
         null=True,
-        help_text="Código de la EDS asignada a la orden",
+        help_text="Clave de la EDS asignada (cod_eds en erelis)",
     )
     form_template = models.ForeignKey(
         FormTemplate,

@@ -1,7 +1,7 @@
 # Makefile utilitario para el backend de Hades
 # Enfocado en tareas usadas diariamente y con soporte a DJANGO_ENV
 
-.PHONY: help preflight check-venv check-env-file install migrations migrate seed create-superuser shell run-server test lint format cloud-proxy
+.PHONY: help preflight check-venv check-env-file install migrations migrate seed create-superuser shell run-server test lint format cloud-proxy clean
 
 VENV := venv
 PYTHON := $(VENV)\Scripts\python.exe
@@ -29,6 +29,7 @@ help:
 	@echo "  make lint             - Ejecuta pylint sobre la app hades"
 	@echo "  make format           - Ejecuta black sobre el código"
 	@echo "  make cloud-proxy      - Abre túnel Cloud SQL (requiere cloud_sql_proxy.exe)"
+	@echo "  make clean            - Limpiar archivos temporales"
 	@echo "Puedes cambiar el entorno con: make run-server DJANGO_ENV=prod"
 	@echo "Puedes alternar EDS con:    make run-server EDS_PROFILE=oasis"
 
@@ -82,6 +83,14 @@ lint: check-venv
 format: check-venv
 	@echo "Formateando código con black..."
 	@$(PYTHON) -m black hades_app server manage.py
+
+clean:
+	@echo "Limpiando archivos temporales..."
+	@if exist __pycache__ rmdir /s /q __pycache__
+	@if exist .pytest_cache rmdir /s /q .pytest_cache
+	@for /d /r . %%d in (__pycache__) do @if exist "%%d" rmdir /s /q "%%d"
+	@for /r . %%f in (*.pyc) do @if exist "%%f" del /q "%%f"
+	@echo "Archivos temporales eliminados."
 
 cloud-proxy:
 	@if not exist $(CLOUD_SQL_CREDENTIALS) ( \

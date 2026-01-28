@@ -140,6 +140,7 @@ def _build_media_url(image_field):
 
 # Serializer para EDS
 class EDSSerializer(serializers.ModelSerializer):
+    # id_eds_pk es la clave_eds (cod_eds en erelis)
     class Meta:
         model = EDS
         fields = [
@@ -175,10 +176,11 @@ class UsersSerializer(serializers.ModelSerializer):
         }
 
     def get_eds_info(self, obj):
-        """Obtener información completa de la EDS asociada"""
-        if obj.id_eds_fk:
+        """Obtener informacion completa de la EDS asociada por clave_eds_fk"""
+        if obj.clave_eds_fk:
             try:
-                eds = EDS.objects.get(id_eds_pk=obj.id_eds_fk)
+                # id_eds_pk es cod_eds en erelis = clave_eds
+                eds = EDS.objects.get(id_eds_pk=obj.clave_eds_fk)
                 return EDSSerializer(eds).data
             except EDS.DoesNotExist:
                 return None
@@ -461,11 +463,15 @@ class WorkOrderSerializer(serializers.ModelSerializer):
             return None
 
     def get_eds(self, obj):
-        try:
-            eds = EDS.objects.get(id_eds_pk=obj.eds_id)
-            return EDSSerializer(eds).data
-        except EDS.DoesNotExist:
-            return None
+        """Obtener informacion completa de la EDS por clave_eds"""
+        if obj.clave_eds:
+            try:
+                # id_eds_pk es cod_eds en erelis = clave_eds
+                eds = EDS.objects.get(id_eds_pk=obj.clave_eds)
+                return EDSSerializer(eds).data
+            except EDS.DoesNotExist:
+                return None
+        return None
 
     def create(self, validated_data):
         """

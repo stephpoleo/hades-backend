@@ -12,7 +12,7 @@ class UsersAdmin(admin.ModelAdmin):
     fieldsets = (
         ("Información Personal", {"fields": ("name", "email", "password")}),
         ("Estado y Permisos", {"fields": ("usr_status", "id_role_fk")}),
-        ("Asignaciones Futuras", {"fields": ("id_eds_fk", "id_work_area_fk")}),
+        ("Asignaciones Futuras", {"fields": ("clave_eds_fk", "id_work_area_fk")}),
     )
 
     def save_model(self, request, obj, form, change):

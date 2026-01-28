@@ -140,7 +140,7 @@ class EDSViewSet(viewsets.ModelViewSet):
                         "success": True,
                         "message": f'EDS "{eds.name}" creada exitosamente',
                         "eds": {
-                            "id": eds.id_eds_pk,
+                            "clave_eds": eds.id_eds_pk,
                             "name": eds.name,
                             "plaza": eds.plaza,
                             "state": eds.state,
@@ -176,7 +176,7 @@ class EDSViewSet(viewsets.ModelViewSet):
                     "success": True,
                     "message": f'EDS "{instance.name}" encontrada',
                     "eds": {
-                        "id": instance.id_eds_pk,
+                        "clave_eds": instance.id_eds_pk,
                         "name": instance.name,
                         "plaza": instance.plaza,
                         "state": instance.state,
@@ -225,7 +225,7 @@ class EDSViewSet(viewsets.ModelViewSet):
                         "success": True,
                         "message": f'EDS "{old_name}" actualizada exitosamente',
                         "eds": {
-                            "id": eds.id_eds_pk,
+                            "clave_eds": eds.id_eds_pk,
                             "name": eds.name,
                             "plaza": eds.plaza,
                             "state": eds.state,
@@ -278,7 +278,7 @@ class EDSViewSet(viewsets.ModelViewSet):
                     eds = EDS.objects.get(id_eds_pk=eds_item["id_eds_pk"])
                     eds_data.append(
                         {
-                            "id": eds.id_eds_pk,
+                            "clave_eds": eds.id_eds_pk,
                             "name": eds.name,
                             "plaza": eds.plaza,
                             "state": eds.state,
@@ -301,7 +301,7 @@ class EDSViewSet(viewsets.ModelViewSet):
                 eds = EDS.objects.get(id_eds_pk=eds_item["id_eds_pk"])
                 eds_data.append(
                     {
-                        "id": eds.id_eds_pk,
+                        "clave_eds": eds.id_eds_pk,
                         "name": eds.name,
                         "plaza": eds.plaza,
                         "state": eds.state,
@@ -326,19 +326,19 @@ class EDSViewSet(viewsets.ModelViewSet):
             )
 
     def destroy(self, request, *args, **kwargs):
-        """Eliminar EDS con mensaje de confirmación"""
+        """Eliminar EDS con mensaje de confirmacion"""
         try:
             instance = self.get_object()
             eds_name = instance.name
-            eds_id = instance.id_eds_pk
+            eds_clave = instance.id_eds_pk
 
             self.perform_destroy(instance)
 
             return Response(
                 {
                     "success": True,
-                    "message": f'EDS "{eds_name}" (ID: {eds_id}) eliminada exitosamente',
-                    "deleted_eds": {"id": eds_id, "name": eds_name},
+                    "message": f'EDS "{eds_name}" (Clave: {eds_clave}) eliminada exitosamente',
+                    "deleted_eds": {"clave_eds": eds_clave, "name": eds_name},
                 },
                 status=status.HTTP_200_OK,
             )
