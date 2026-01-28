@@ -424,12 +424,28 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # ============================================================================
 
 # === CORS Y COOKIES SEGÚN RECETA ===
+# Orígenes locales para desarrollo (siempre incluidos)
+_LOCAL_ORIGINS = [
+    "http://localhost:4200",
+    "https://localhost:4200",
+    "http://127.0.0.1:4200",
+    "https://127.0.0.1:4200",
+    "http://localhost:8080",
+    "https://localhost:8080",
+    "http://127.0.0.1:8080",
+    "https://127.0.0.1:8080",
+    "http://localhost:8000",
+    "https://localhost:8000",
+    "http://127.0.0.1:8000",
+    "https://127.0.0.1:8000",
+]
+
 CORS_ALLOWED_ORIGINS = [
     FRONT_ORIGIN,
     FRONT_ORIGIN.replace("http://", "https://"),
     API_ORIGIN,
     API_ORIGIN.replace("http://", "https://"),
-]
+] + _LOCAL_ORIGINS
 CORS_ALLOW_CREDENTIALS = True
 
 # Cookies de sesión/CSRF
@@ -447,7 +463,7 @@ CSRF_TRUSTED_ORIGINS = [
     FRONT_ORIGIN.replace("http://", "https://"),
     API_ORIGIN,
     API_ORIGIN.replace("http://", "https://"),
-]
+] + _LOCAL_ORIGINS
 
 if FORCE_HTTPS:
     # Cloud Run envía X-Forwarded-Proto=https; indicamos a Django que confíe en él
