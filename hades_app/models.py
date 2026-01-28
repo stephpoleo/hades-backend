@@ -437,6 +437,12 @@ class FormAnswers(models.Model):
         null=True,
         help_text="Archivo de imagen de la respuesta",
     )
+    clave_eds_fk = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True,
+        help_text="Clave de la EDS donde se respondió (cod_eds en erelis)",
+    )
 
     class Meta:
         db_table = "FormAnswers"

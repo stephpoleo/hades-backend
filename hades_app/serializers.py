@@ -463,11 +463,22 @@ class WorkOrderSerializer(serializers.ModelSerializer):
             return None
 
     def get_eds(self, obj):
-        """Obtener informacion completa de la EDS por clave_eds"""
-        if obj.clave_eds:
+        """Obtener informacion completa de la EDS por clave_eds o desde form answers"""
+        clave_eds = obj.clave_eds
+
+        # Si el work order no tiene clave_eds, buscar en los form answers
+        if not clave_eds:
+            first_answer = FormAnswers.objects.filter(
+                work_order=obj,
+                clave_eds_fk__isnull=False
+            ).exclude(clave_eds_fk='').first()
+            if first_answer:
+                clave_eds = first_answer.clave_eds_fk
+
+        if clave_eds:
             try:
                 # id_eds_pk es cod_eds en erelis = clave_eds
-                eds = EDS.objects.get(id_eds_pk=obj.clave_eds)
+                eds = EDS.objects.get(id_eds_pk=clave_eds)
                 return EDSSerializer(eds).data
             except EDS.DoesNotExist:
                 return None
@@ -545,6 +556,26 @@ class FormAnswersSerializer(serializers.ModelSerializer):
         logger.error(
             f"[FormAnswersSerializer.create] validated_data keys: {list(validated_data.keys())}, image: {image}, type: {type(image)}"
         )
+
+        # Lógica para establecer clave_eds_fk
+        # Si no se proporciona, usar la EDS del usuario asociado al work_order
+        clave_eds = validated_data.get("clave_eds_fk")
+        work_order = validated_data.get("work_order")
+
+        if not clave_eds and work_order:
+            # Obtener el usuario del work_order y usar su EDS por defecto
+            try:
+                user = Users.objects.get(id_usr_pk=work_order.user_id)
+                if user.clave_eds_fk:
+                    validated_data["clave_eds_fk"] = user.clave_eds_fk
+                    logger.info(
+                        f"[FormAnswersSerializer.create] Usando EDS del usuario: {user.clave_eds_fk}"
+                    )
+            except Users.DoesNotExist:
+                logger.warning(
+                    f"[FormAnswersSerializer.create] No se encontró usuario para work_order {work_order.id}"
+                )
+
         instance = super(FormAnswersSerializer, self).create(validated_data)
         if image:
             try:
@@ -589,12 +620,24 @@ class FormAnswersSerializer(serializers.ModelSerializer):
     )
     work_order_name = serializers.SerializerMethodField(read_only=True)
     image = serializers.ImageField(required=False, allow_null=True)
+    clave_eds_fk = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    eds_info = serializers.SerializerMethodField(read_only=True)
 
     def get_work_order(self, obj):
         return obj.work_order.id if obj.work_order else None
 
     def get_work_order_name(self, obj):
         return str(obj.work_order) if obj.work_order else None
+
+    def get_eds_info(self, obj):
+        """Obtener información completa de la EDS asociada a la respuesta"""
+        if obj.clave_eds_fk:
+            try:
+                eds = EDS.objects.get(id_eds_pk=obj.clave_eds_fk)
+                return EDSSerializer(eds).data
+            except EDS.DoesNotExist:
+                return None
+        return None
 
     class Meta:
         model = FormAnswers
@@ -609,6 +652,8 @@ class FormAnswersSerializer(serializers.ModelSerializer):
             "area",
             "comments",
             "image",
+            "clave_eds_fk",
+            "eds_info",
         ]
         extra_kwargs = {
             "question": {"required": False},
