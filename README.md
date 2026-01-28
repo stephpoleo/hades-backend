@@ -98,6 +98,13 @@ gcloud builds submit --tag us-central1-docker.pkg.dev/hades-backend-prod/hades/h
 ```
 
 ### Deploy / Update (Cloud Run)
+
+**PowerShell (Windows):**
+```powershell
+gcloud run deploy hades-backend --image us-central1-docker.pkg.dev/hades-backend-prod/hades/hades-backend:latest --region us-central1 --platform managed --allow-unauthenticated --add-cloudsql-instances hades-backend-prod:us-central1:hades-bd --set-env-vars "DJANGO_ENV=prod,DEBUG=False,FORCE_HTTPS=true,HOST=hades-backend-694277248400.us-central1.run.app,DB_HOST=/cloudsql/hades-backend-prod:us-central1:hades-bd,DB_PORT=5432,DB_NAME=postgres,EDS_SOURCES=erelis,EDS_PROFILE=erelis,EDS_DB_TABLE=oasis_cat_eds,EDS_ERELIS_DB_ENGINE=hades_app.db_backends.postgres_compat,EDS_ERELIS_DB_NAME=postgres,EDS_ERELIS_DB_USER=erelis_admin,EDS_ERELIS_DB_HOST=erelis-prod.postgres.database.azure.com,EDS_ERELIS_DB_PORT=5432,EDS_ERELIS_DB_SSLMODE=require,FRONT_ORIGIN=https://hades-frontend-694277248400.us-central1.run.app,API_ORIGIN=https://hades-backend-694277248400.us-central1.run.app" --set-secrets "SECRET_KEY=SECRET_KEY:latest,DB_PASSWORD=DB_PASSWORD:latest,DB_USER=DB_USER:latest,EDS_ERELIS_DB_PASSWORD=EDS_ERELIS_DB_PASSWORD:latest" --memory 512Mi --cpu 1 --min-instances 1 --port 8000
+```
+
+**Bash (Linux/Mac):**
 ```bash
 gcloud run deploy hades-backend \
   --image us-central1-docker.pkg.dev/hades-backend-prod/hades/hades-backend:latest \
@@ -105,8 +112,8 @@ gcloud run deploy hades-backend \
   --platform managed \
   --allow-unauthenticated \
   --add-cloudsql-instances hades-backend-prod:us-central1:hades-bd \
-  --set-env-vars DJANGO_ENV=prod,DEBUG=False,FORCE_HTTPS=true,HOST=hades-backend-694277248400.us-central1.run.app,DB_HOST=/cloudsql/hades-backend-prod:us-central1:hades-bd,DB_PORT=5432,DB_NAME=postgres,EDS_SOURCES=erelis,EDS_PROFILE=erelis,EDS_DB_TABLE=oasis_cat_eds,EDS_ERELIS_DB_ENGINE=hades_app.db_backends.postgres_compat,EDS_ERELIS_DB_NAME=postgres,EDS_ERELIS_DB_USER=erelis_admin,EDS_ERELIS_DB_HOST=erelis-prod.postgres.database.azure.com,EDS_ERELIS_DB_PORT=5432,EDS_ERELIS_DB_SSLMODE=require,FRONT_ORIGIN=https://hades-frontend-694277248400.us-central1.run.app,API_ORIGIN=https://hades-backend-694277248400.us-central1.run.app \
-  --set-secrets SECRET_KEY=SECRET_KEY:latest,DB_PASSWORD=DB_PASSWORD:latest,DB_USER=DB_USER:latest,EDS_ERELIS_DB_PASSWORD=EDS_ERELIS_DB_PASSWORD:latest \
+  --set-env-vars "DJANGO_ENV=prod,DEBUG=False,FORCE_HTTPS=true,HOST=hades-backend-694277248400.us-central1.run.app,DB_HOST=/cloudsql/hades-backend-prod:us-central1:hades-bd,DB_PORT=5432,DB_NAME=postgres,EDS_SOURCES=erelis,EDS_PROFILE=erelis,EDS_DB_TABLE=oasis_cat_eds,EDS_ERELIS_DB_ENGINE=hades_app.db_backends.postgres_compat,EDS_ERELIS_DB_NAME=postgres,EDS_ERELIS_DB_USER=erelis_admin,EDS_ERELIS_DB_HOST=erelis-prod.postgres.database.azure.com,EDS_ERELIS_DB_PORT=5432,EDS_ERELIS_DB_SSLMODE=require,FRONT_ORIGIN=https://hades-frontend-694277248400.us-central1.run.app,API_ORIGIN=https://hades-backend-694277248400.us-central1.run.app" \
+  --set-secrets "SECRET_KEY=SECRET_KEY:latest,DB_PASSWORD=DB_PASSWORD:latest,DB_USER=DB_USER:latest,EDS_ERELIS_DB_PASSWORD=EDS_ERELIS_DB_PASSWORD:latest" \
   --memory 512Mi --cpu 1 --min-instances 1 \
   --port 8000
 ```
