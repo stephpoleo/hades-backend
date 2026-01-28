@@ -127,6 +127,7 @@ class EDSViewSet(viewsets.ModelViewSet):
 
     queryset = EDS.objects.all()
     serializer_class = EDSSerializer
+    pagination_class = None
 
     def create(self, request, *args, **kwargs):
         """Crear nueva EDS con mensaje de confirmación"""
@@ -366,6 +367,7 @@ class UsersViewSet(viewsets.ModelViewSet):
 
     queryset = Users.objects.all()
     serializer_class = UsersSerializer
+    pagination_class = None
 
     def create(self, request, *args, **kwargs):
         """Crear nuevo usuario con mensaje de confirmación"""
