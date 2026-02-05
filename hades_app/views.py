@@ -27,7 +27,10 @@ from .models import (
     Roles,
 )
 from django.db import transaction
-from django.db.models import Count, Max
+from django.db.models import Count, Max, Avg, Q, F
+from django.db.models.functions import Coalesce
+from collections import defaultdict
+from decimal import Decimal, InvalidOperation
 from .serializers import (
     UsersSerializer,
     EDSSerializer,
@@ -1092,3 +1095,370 @@ class PermissionsViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+
+# Dashboard KPI endpoint
+@api_view(["GET"])
+def dashboard_kpis(request):
+    """
+    Endpoint para obtener los KPIs del dashboard de cumplimiento.
+
+    Query params:
+    - zone: Filtrar por zona/plaza (opcional)
+    - eds: Filtrar por clave_eds (opcional)
+    - form: Filtrar por form_template_id (opcional)
+    - start_date: Fecha inicio YYYY-MM-DD (opcional)
+    - end_date: Fecha fin YYYY-MM-DD (opcional)
+    """
+    logger = logging.getLogger("django")
+
+    try:
+        # Obtener parámetros de filtro
+        zone_filter = request.query_params.get("zone")
+        eds_filter = request.query_params.get("eds")
+        form_filter = request.query_params.get("form")
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+
+        # Base queryset de work orders
+        work_orders_qs = WorkOrder.objects.select_related("form_template").all()
+
+        # Aplicar filtros
+        if start_date:
+            work_orders_qs = work_orders_qs.filter(date__gte=start_date)
+        if end_date:
+            work_orders_qs = work_orders_qs.filter(date__lte=end_date)
+        if form_filter:
+            work_orders_qs = work_orders_qs.filter(form_template_id=form_filter)
+
+        # Obtener todas las EDS
+        eds_list = EDS.objects.all()
+        if zone_filter:
+            eds_list = eds_list.filter(plaza=zone_filter)
+        if eds_filter:
+            eds_list = eds_list.filter(id_eds_pk=eds_filter)
+
+        eds_map = {eds.id_eds_pk: eds for eds in eds_list}
+        eds_claves = set(eds_map.keys())
+
+        # Filtrar work orders por EDS
+        if zone_filter or eds_filter:
+            work_orders_qs = work_orders_qs.filter(clave_eds__in=eds_claves)
+
+        # Obtener todos los form templates activos
+        form_templates = FormTemplate.objects.filter(is_active=True)
+        form_templates_map = {ft.id: ft for ft in form_templates}
+
+        # Calcular compliance grade para cada work order
+        def calculate_completion_grade(work_order):
+            """Calcula el grade de cumplimiento para una work order"""
+            if not work_order.form_template:
+                return None
+
+            questions = list(work_order.form_template.questions.all())
+            total_questions = len(questions)
+            if total_questions == 0:
+                return None
+
+            answers = FormAnswers.objects.filter(work_order=work_order)
+            answers_by_question = {a.question_id: a for a in answers}
+
+            correct_answers = 0
+            for question in questions:
+                answer_obj = answers_by_question.get(question.id)
+                if _is_answer_correct(question, answer_obj):
+                    correct_answers += 1
+
+            return (correct_answers / total_questions) * 100
+
+        # Estructuras para agregar datos
+        eds_compliance_data = defaultdict(lambda: {
+            "work_orders": [],
+            "forms": defaultdict(lambda: {"expected": 0, "obtained": 0, "grades": []})
+        })
+
+        form_compliance_data = defaultdict(lambda: {
+            "expected": 0,
+            "obtained": 0,
+            "grades": [],
+            "zones": set(),
+            "eds_list": set()
+        })
+
+        zone_compliance_data = defaultdict(lambda: {
+            "stations": set(),
+            "grades": [],
+            "eds_list": set(),
+            "forms": set()
+        })
+
+        # Procesar cada work order
+        for wo in work_orders_qs:
+            clave_eds = wo.clave_eds
+            if not clave_eds:
+                # Intentar obtener del primer form answer
+                first_answer = FormAnswers.objects.filter(
+                    work_order=wo, clave_eds_fk__isnull=False
+                ).exclude(clave_eds_fk='').first()
+                if first_answer:
+                    clave_eds = first_answer.clave_eds_fk
+
+            if not clave_eds or clave_eds not in eds_claves:
+                continue
+
+            eds_info = eds_map.get(clave_eds)
+            if not eds_info:
+                continue
+
+            zone = eds_info.plaza or "SIN ZONA"
+            form_template = wo.form_template
+            if not form_template:
+                continue
+
+            grade = calculate_completion_grade(wo)
+            if grade is None:
+                continue
+
+            # Contar preguntas y respuestas
+            total_questions = form_template.questions.count()
+            total_answers = FormAnswers.objects.filter(
+                work_order=wo
+            ).exclude(answer__isnull=True).exclude(answer__exact="").count()
+
+            # Agregar a datos de EDS
+            eds_compliance_data[clave_eds]["work_orders"].append({
+                "id": wo.id,
+                "grade": grade,
+                "form_template_id": form_template.id,
+                "form_template_name": form_template.name,
+                "date": wo.date.isoformat() if wo.date else None
+            })
+            eds_compliance_data[clave_eds]["forms"][form_template.id]["expected"] += total_questions
+            eds_compliance_data[clave_eds]["forms"][form_template.id]["obtained"] += total_answers
+            eds_compliance_data[clave_eds]["forms"][form_template.id]["grades"].append(grade)
+
+            # Agregar a datos de formulario
+            form_compliance_data[form_template.id]["expected"] += total_questions
+            form_compliance_data[form_template.id]["obtained"] += total_answers
+            form_compliance_data[form_template.id]["grades"].append(grade)
+            form_compliance_data[form_template.id]["zones"].add(zone)
+            form_compliance_data[form_template.id]["eds_list"].add(clave_eds)
+
+            # Agregar a datos de zona
+            zone_compliance_data[zone]["stations"].add(clave_eds)
+            zone_compliance_data[zone]["grades"].append(grade)
+            zone_compliance_data[zone]["eds_list"].add(clave_eds)
+            zone_compliance_data[zone]["forms"].add(form_template.name)
+
+        # Calcular métricas finales
+
+        # 1. Compliance rows (por EDS)
+        compliance_rows = []
+        all_grades = []
+
+        for clave_eds, data in eds_compliance_data.items():
+            eds_info = eds_map.get(clave_eds)
+            if not eds_info:
+                continue
+
+            eds_grades = [wo["grade"] for wo in data["work_orders"] if wo["grade"] is not None]
+            if not eds_grades:
+                continue
+
+            avg_grade = sum(eds_grades) / len(eds_grades)
+            all_grades.append(avg_grade)
+
+            # Métricas por formulario para esta EDS
+            metrics = []
+            for form_id, form_data in data["forms"].items():
+                form_template = form_templates_map.get(form_id)
+                if not form_template:
+                    continue
+
+                form_grades = form_data["grades"]
+                form_percent = sum(form_grades) / len(form_grades) if form_grades else 0
+
+                metrics.append({
+                    "label": form_template.name,
+                    "expected": form_data["expected"],
+                    "obtained": form_data["obtained"],
+                    "percent": round(form_percent, 0)
+                })
+
+            if metrics:
+                compliance_rows.append({
+                    "clave_eds": clave_eds,
+                    "zone": eds_info.plaza or "SIN ZONA",
+                    "eds": eds_info.name or clave_eds,
+                    "avg_grade": round(avg_grade, 2),
+                    "metrics": metrics
+                })
+
+        # Ordenar por grade descendente y asignar posición
+        compliance_rows.sort(key=lambda x: x["avg_grade"], reverse=True)
+        for i, row in enumerate(compliance_rows):
+            row["position"] = i + 1
+
+        # 2. Compliance highlights
+        total_eds = len(compliance_rows)
+        excellent_count = sum(1 for row in compliance_rows if row["avg_grade"] >= 90)
+        attention_count = sum(1 for row in compliance_rows if 50 <= row["avg_grade"] < 75)
+        critical_count = sum(1 for row in compliance_rows if row["avg_grade"] < 50)
+
+        compliance_highlights = [
+            {
+                "label": "Estaciones de Servicio",
+                "value": str(total_eds),
+                "chip": "Total",
+                "tone": "neutral"
+            },
+            {
+                "label": "EDS ≥90% Cumplimiento",
+                "value": str(excellent_count),
+                "chip": "Excelente",
+                "tone": "positive"
+            },
+            {
+                "label": "EDS 50-75% Cumplimiento",
+                "value": str(attention_count),
+                "chip": "Atención",
+                "tone": "warning"
+            },
+            {
+                "label": "EDS <50% Cumplimiento",
+                "value": str(critical_count),
+                "chip": "Crítico",
+                "tone": "danger"
+            }
+        ]
+
+        # 3. Overall compliance rating
+        compliance_rating = round(sum(all_grades) / len(all_grades), 0) if all_grades else 0
+
+        # 4. Zone compliance
+        zone_compliance = []
+        for zone_name, data in zone_compliance_data.items():
+            zone_grades = data["grades"]
+            zone_percent = sum(zone_grades) / len(zone_grades) if zone_grades else 0
+
+            zone_compliance.append({
+                "zone": zone_name,
+                "stations": len(data["stations"]),
+                "percent": round(zone_percent, 0),
+                "edsList": list(data["eds_list"]),
+                "forms": list(data["forms"])
+            })
+
+        zone_compliance.sort(key=lambda x: x["percent"], reverse=True)
+
+        # 5. Type compliance (por formulario)
+        type_compliance = []
+        for form_id, data in form_compliance_data.items():
+            form_template = form_templates_map.get(form_id)
+            if not form_template:
+                continue
+
+            form_grades = data["grades"]
+            form_percent = sum(form_grades) / len(form_grades) if form_grades else 0
+
+            type_compliance.append({
+                "id": form_id,
+                "name": form_template.name,
+                "expected": data["expected"],
+                "obtained": data["obtained"],
+                "percent": round(form_percent, 0),
+                "zones": list(data["zones"]),
+                "edsList": list(data["eds_list"])
+            })
+
+        type_compliance.sort(key=lambda x: x["percent"], reverse=True)
+
+        # 6. Opciones de filtro
+        all_zones = sorted(set(eds.plaza for eds in eds_list if eds.plaza))
+        all_eds_options = [{"clave_eds": eds.id_eds_pk, "name": eds.name} for eds in eds_list]
+        all_form_options = [{"id": ft.id, "name": ft.name} for ft in form_templates]
+
+        return Response({
+            "success": True,
+            "complianceRating": compliance_rating,
+            "complianceHighlights": compliance_highlights,
+            "complianceRows": compliance_rows,
+            "zoneCompliance": zone_compliance,
+            "typeCompliance": type_compliance,
+            "filterOptions": {
+                "zones": all_zones,
+                "eds": all_eds_options,
+                "forms": all_form_options
+            }
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.exception("Error en dashboard_kpis")
+        return Response({
+            "success": False,
+            "error": "Error al calcular KPIs del dashboard",
+            "message": str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+def _is_answer_correct(question, answer_obj):
+    """Determina si una respuesta es correcta según el tipo de pregunta"""
+    if not answer_obj or answer_obj.answer in (None, ""):
+        return False
+
+    raw_value = answer_obj.answer
+    expected = getattr(question, "expected_value", None)
+
+    if expected not in (None, ""):
+        return _compare_with_expected(question.type, expected, raw_value)
+
+    if question.type == "boolean":
+        if isinstance(raw_value, bool):
+            return raw_value is True
+        normalized = str(raw_value).strip().lower()
+        return normalized in {"true", "1", "si", "sí", "yes"}
+
+    if question.type == "percent":
+        normalized = str(raw_value).strip().replace("%", "").replace(",", ".")
+        try:
+            value = Decimal(normalized)
+        except (InvalidOperation, ValueError):
+            return False
+        return value == Decimal("100")
+
+    return True
+
+
+def _compare_with_expected(qtype, expected_value, raw_value):
+    """Compara la respuesta contra el expected_value según el tipo de pregunta"""
+    if raw_value in (None, ""):
+        return False
+
+    if qtype == "boolean":
+        def _to_bool(val):
+            if isinstance(val, bool):
+                return val
+            normalized = str(val).strip().lower()
+            if normalized in {"true", "1", "si", "sí", "yes"}:
+                return True
+            if normalized in {"false", "0", "no"}:
+                return False
+            return None
+
+        exp_bool = _to_bool(expected_value)
+        ans_bool = _to_bool(raw_value)
+        return exp_bool is not None and ans_bool is not None and exp_bool == ans_bool
+
+    if qtype in {"number", "percent"}:
+        def _to_decimal(val):
+            try:
+                normalized = str(val).strip().replace("%", "").replace(",", ".")
+                return Decimal(normalized)
+            except (InvalidOperation, ValueError):
+                return None
+
+        exp_dec = _to_decimal(expected_value)
+        ans_dec = _to_decimal(raw_value)
+        return exp_dec is not None and ans_dec is not None and exp_dec >= ans_dec
+
+    return str(raw_value).strip().lower() == str(expected_value).strip().lower()

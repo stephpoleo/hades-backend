@@ -413,6 +413,7 @@ GS_BUCKET_NAME = env("GS_BUCKET_NAME", "hades-media")
 # MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 DEFAULT_FILE_STORAGE = "storages.backends.gcloud.GoogleCloudStorage"
 MEDIA_URL = f"https://storage.googleapis.com/{GS_BUCKET_NAME}/"
+DATA_UPLOAD_MAX_MEMORY_SIZE = 20971520  # 20MB (default es 2.5MB)
 GS_QUERYSTRING_AUTH = True  # URLs firmadas
 GS_QUERYSTRING_EXPIRE = 3600  # 1 hora
 
