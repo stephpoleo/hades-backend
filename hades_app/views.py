@@ -36,11 +36,13 @@ from .serializers import (
     EDSSerializer,
     FormTemplateSerializer,
     WorkOrderSerializer,
+    WorkOrderListSerializer,
     FormQuestionsSerializer,
     FormAnswersSerializer,
     PermissionsSerializer,
     RolesSerializer,
 )
+from .pagination import StandardPagination, LargePagination
 
 
 # Endpoint: /api/auth/csrf/
@@ -130,7 +132,13 @@ class EDSViewSet(viewsets.ModelViewSet):
 
     queryset = EDS.objects.all()
     serializer_class = EDSSerializer
-    pagination_class = None
+    pagination_class = LargePagination
+
+    def get_pagination_class(self):
+        """Permite desactivar paginación con ?no_pagination=true para dropdowns"""
+        if self.request.query_params.get('no_pagination') == 'true':
+            return None
+        return self.pagination_class
 
     def create(self, request, *args, **kwargs):
         """Crear nueva EDS con mensaje de confirmación"""
@@ -273,37 +281,13 @@ class EDSViewSet(viewsets.ModelViewSet):
         """Listar EDS con mensaje (incluyendo longitud y latitud)"""
         try:
             queryset = self.filter_queryset(self.get_queryset())
-            page = self.paginate_queryset(queryset)
 
-            if page is not None:
-                serializer = self.get_serializer(page, many=True)
-                eds_data = []
-                for eds_item in serializer.data:
-                    eds = EDS.objects.get(id_eds_pk=eds_item["id_eds_pk"])
-                    eds_data.append(
-                        {
-                            "clave_eds": eds.id_eds_pk,
-                            "name": eds.name,
-                            "plaza": eds.plaza,
-                            "state": eds.state,
-                            "municipality": eds.municipality,
-                            "status": eds.plaza_status,
-                            "longitude": str(eds.long_eds) if eds.long_eds else None,
-                            "latitude": str(eds.latit_eds) if eds.latit_eds else None,
-                        }
-                    )
-                return self.get_paginated_response(
-                    {
-                        "success": True,
-                        "message": f"{len(eds_data)} EDS encontradas",
-                        "eds_list": eds_data,
-                    }
-                )
-            serializer = self.get_serializer(queryset, many=True)
-            eds_data = []
-            for eds_item in serializer.data:
-                eds = EDS.objects.get(id_eds_pk=eds_item["id_eds_pk"])
-                eds_data.append(
+            # Permitir desactivar paginación para dropdowns
+            no_pagination = request.query_params.get('no_pagination') == 'true'
+
+            # Construir eds_data directamente del queryset (evita N+1)
+            def build_eds_data(qs):
+                return [
                     {
                         "clave_eds": eds.id_eds_pk,
                         "name": eds.name,
@@ -314,7 +298,26 @@ class EDSViewSet(viewsets.ModelViewSet):
                         "longitude": str(eds.long_eds) if eds.long_eds else None,
                         "latitude": str(eds.latit_eds) if eds.latit_eds else None,
                     }
+                    for eds in qs
+                ]
+
+            if no_pagination:
+                eds_data = build_eds_data(queryset)
+                return Response(
+                    {
+                        "success": True,
+                        "message": f"{len(eds_data)} EDS encontradas",
+                        "eds_list": eds_data,
+                    },
+                    status=status.HTTP_200_OK,
                 )
+
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                eds_data = build_eds_data(page)
+                return self.get_paginated_response(eds_data)
+
+            eds_data = build_eds_data(queryset)
             return Response(
                 {
                     "success": True,
@@ -370,7 +373,13 @@ class UsersViewSet(viewsets.ModelViewSet):
 
     queryset = Users.objects.all()
     serializer_class = UsersSerializer
-    pagination_class = None
+    pagination_class = LargePagination
+
+    def get_pagination_class(self):
+        """Permite desactivar paginación con ?no_pagination=true para dropdowns"""
+        if self.request.query_params.get('no_pagination') == 'true':
+            return None
+        return self.pagination_class
 
     def create(self, request, *args, **kwargs):
         """Crear nuevo usuario con mensaje de confirmación"""
@@ -519,20 +528,85 @@ class UsersViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         """Listar usuarios con mensaje y todos los campos del serializer (incluyendo eds_info)"""
         try:
-            queryset = self.filter_queryset(self.get_queryset())
-            page = self.paginate_queryset(queryset)
+            from collections import defaultdict
 
-            if page is not None:
-                serializer = self.get_serializer(page, many=True)
-                return self.get_paginated_response(
+            queryset = self.filter_queryset(self.get_queryset())
+
+            # Permitir desactivar paginación para dropdowns
+            no_pagination = request.query_params.get('no_pagination') == 'true'
+
+            # Search filter: busca por nombre (case-insensitive)
+            search = request.query_params.get('search', '').strip()
+            if search:
+                queryset = queryset.filter(name__icontains=search)
+
+            # EDS filter: filtra por nombre de EDS
+            eds_name = request.query_params.get('eds_name', '').strip()
+            if eds_name:
+                # Primero obtener las claves de EDS que coinciden con el nombre
+                matching_eds_claves = list(
+                    EDS.objects.filter(name__iexact=eds_name).values_list('id_eds_pk', flat=True)
+                )
+                queryset = queryset.filter(clave_eds_fk__in=matching_eds_claves)
+
+            # Calcular stats de work orders en batch para evitar N+1
+            # 1. Contar asignadas por usuario
+            assigned_stats = (
+                WorkOrder.objects.values("user_id")
+                .annotate(assigned=Count("id"))
+            )
+            user_stats = defaultdict(lambda: {"assigned": 0, "completed": 0})
+            for stat in assigned_stats:
+                user_stats[stat["user_id"]]["assigned"] = stat["assigned"]
+
+            # 2. Calcular completadas (answers >= questions del template)
+            work_orders = (
+                WorkOrder.objects.select_related("form_template")
+                .prefetch_related("form_template__questions")
+                .annotate(
+                    answers_count=Count(
+                        "formanswers",
+                        filter=~Q(formanswers__answer__isnull=True)
+                        & ~Q(formanswers__answer__exact=""),
+                    )
+                )
+            )
+
+            for wo in work_orders:
+                if wo.form_template and wo.user_id:
+                    total_questions = wo.form_template.questions.count()
+                    if total_questions > 0 and wo.answers_count >= total_questions:
+                        user_stats[wo.user_id]["completed"] += 1
+
+            # Pasar stats al contexto del serializer
+            context = self.get_serializer_context()
+            context["user_stats"] = dict(user_stats)
+
+            # Batch load EDS para evitar N+1 en get_eds_info
+            eds_claves = set(queryset.values_list('clave_eds_fk', flat=True))
+            eds_claves.discard(None)
+            eds_claves.discard('')
+            if eds_claves:
+                eds_map = {e.id_eds_pk: e for e in EDS.objects.filter(id_eds_pk__in=eds_claves)}
+                context["eds_map"] = eds_map
+
+            if no_pagination:
+                serializer = self.get_serializer(queryset, many=True, context=context)
+                return Response(
                     {
                         "success": True,
                         "message": f"{len(serializer.data)} usuarios encontrados",
                         "users": serializer.data,
-                    }
+                    },
+                    status=status.HTTP_200_OK,
                 )
 
-            serializer = self.get_serializer(queryset, many=True)
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True, context=context)
+                return self.get_paginated_response(serializer.data)
+
+            serializer = self.get_serializer(queryset, many=True, context=context)
             return Response(
                 {
                     "success": True,
@@ -592,10 +666,11 @@ class UsersViewSet(viewsets.ModelViewSet):
 
 # FormTemplate ViewSet
 class FormTemplateViewSet(viewsets.ModelViewSet):
-    """API para gestionar plantillas de formularios"""
+    """API para gestionar plantillas de formularios."""
 
     queryset = FormTemplate.objects.all()
     serializer_class = FormTemplateSerializer
+    pagination_class = StandardPagination  # Paginación estándar para formularios
 
     @action(detail=False, methods=["delete"], url_path="clear-all")
     def clear_all(self, request):
@@ -627,11 +702,77 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
 
     queryset = WorkOrder.objects.all()
     serializer_class = WorkOrderSerializer
+    pagination_class = StandardPagination
+
+    def get_serializer_class(self):
+        # Use lightweight serializer for list to avoid timeout
+        if self.action == 'list':
+            return WorkOrderListSerializer
+        return WorkOrderSerializer
 
     def list(self, request, *args, **kwargs):
+        """
+        Listar work orders con paginación y batch loading optimizado.
+
+        Query params:
+        - page: número de página (default: 1)
+        - page_size: registros por página (default: 50, max: 200)
+        - no_pagination: 'true' para desactivar paginación
+        - user_id: filtrar por usuario
+        - form_template_id: filtrar por formulario
+        - clave_eds: filtrar por EDS
+        """
         logger = logging.getLogger("django")
         try:
-            return super().list(request, *args, **kwargs)
+            queryset = self.filter_queryset(self.get_queryset())
+
+            # Permitir desactivar paginación si es necesario
+            no_pagination = request.query_params.get('no_pagination') == 'true'
+
+            # Batch load: obtener todos los user_ids y clave_eds únicos
+            # para cargar en una sola query
+            wo_data = queryset.values_list('user_id', 'clave_eds')
+            user_ids = set()
+            eds_claves = set()
+            for user_id, clave_eds in wo_data:
+                if user_id:
+                    user_ids.add(user_id)
+                if clave_eds:
+                    eds_claves.add(clave_eds)
+
+            # Batch load users
+            users_map = {}
+            if user_ids:
+                users_map = {
+                    u.id_usr_pk: u
+                    for u in Users.objects.filter(id_usr_pk__in=user_ids)
+                }
+
+            # Batch load EDS
+            eds_map = {}
+            if eds_claves:
+                eds_map = {
+                    e.id_eds_pk: e
+                    for e in EDS.objects.filter(id_eds_pk__in=eds_claves)
+                }
+
+            # Pasar datos batch al contexto del serializer
+            context = self.get_serializer_context()
+            context['users_map'] = users_map
+            context['eds_map'] = eds_map
+
+            if no_pagination:
+                serializer = self.get_serializer(queryset, many=True, context=context)
+                return Response(serializer.data)
+
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True, context=context)
+                return self.get_paginated_response(serializer.data)
+
+            serializer = self.get_serializer(queryset, many=True, context=context)
+            return Response(serializer.data)
+
         except Exception as exc:
             logger.exception("Error GET /api/work-orders/")
             return Response({"detail": str(exc)}, status=500)
@@ -644,11 +785,38 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
         serializer.save(**kwargs)
 
     def get_queryset(self):
-        queryset = WorkOrder.objects.all()
+        """
+        QuerySet optimizado con:
+        - select_related para form_template
+        - prefetch_related para questions
+        - annotate para answers_count (evita N+1)
+        """
+        queryset = WorkOrder.objects.select_related(
+            'form_template'
+        ).prefetch_related(
+            'form_template__questions'
+        ).annotate(
+            _answers_count=Count(
+                'formanswers',
+                filter=~Q(formanswers__answer__isnull=True) & ~Q(formanswers__answer__exact='')
+            ),
+            _total_questions=Count('form_template__questions')
+        )
+
+        # Filtros opcionales
         user_id = self.request.query_params.get("user_id")
         if user_id:
             queryset = queryset.filter(user_id=user_id)
-        return queryset
+
+        form_template_id = self.request.query_params.get("form_template_id")
+        if form_template_id:
+            queryset = queryset.filter(form_template_id=form_template_id)
+
+        clave_eds = self.request.query_params.get("clave_eds")
+        if clave_eds:
+            queryset = queryset.filter(clave_eds=clave_eds)
+
+        return queryset.order_by('-date', '-id')
 
     @action(detail=False, methods=["delete"], url_path="clear-all")
     def clear_all(self, request):
@@ -672,16 +840,40 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
 
 # FormQuestions ViewSet
 class FormQuestionsViewSet(viewsets.ModelViewSet):
-    """API para gestionar preguntas de formularios"""
+    """API para gestionar preguntas de formularios.
+
+    Sin paginación: las preguntas de un formulario deben devolverse completas.
+
+    Filtros soportados:
+        - form_template: ID del template para filtrar preguntas
+          Ejemplo: GET /api/form-questions/?form_template=5
+    """
 
     queryset = FormQuestions.objects.all()
     serializer_class = FormQuestionsSerializer
+    pagination_class = None  # Deshabilitar paginación para preguntas
+
+    def get_queryset(self):
+        """Filtra las preguntas por form_template si se proporciona."""
+        queryset = FormQuestions.objects.all().order_by("question_order")
+
+        form_template_id = self.request.query_params.get("form_template")
+        if form_template_id:
+            queryset = queryset.filter(form_template_id=form_template_id)
+
+        return queryset
 
 
 # FormAnswers ViewSet
 class FormAnswersViewSet(viewsets.ModelViewSet):
+    """API para gestionar respuestas de formularios.
+
+    Sin paginación: las respuestas se cargan por work_order completas.
+    """
+
     # Asegura que DRF procese multipart/form-data y lea request.FILES
     parser_classes = (MultiPartParser, FormParser)
+    pagination_class = None  # Deshabilitar paginación para respuestas
 
     @action(detail=False, methods=["get"], url_path="by-workorder")
     def by_workorder(self, request):
@@ -738,99 +930,124 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
             logger.exception("Error GET /api/form-answers/")
             return Response({"detail": str(exc)}, status=500)
 
+    def _decode_base64_image(self, data_str, logger):
+        """
+        Decodifica una imagen base64/data URI a ContentFile.
+
+        Args:
+            data_str: String con datos base64 o data URI
+            logger: Logger para registrar eventos
+
+        Returns:
+            ContentFile or None
+        """
+        if not data_str or not isinstance(data_str, str):
+            return None
+
+        file_name = f"{uuid.uuid4().hex}.jpg"
+        try:
+            img_str = data_str
+            if img_str.startswith("data:") and "," in img_str:
+                header, encoded = img_str.split(",", 1)
+                if ";base64" in header:
+                    img_str = encoded
+                    try:
+                        ext = header.split("/")[1].split(";")[0]
+                        file_name = f"{uuid.uuid4().hex}.{ext}"
+                    except Exception:
+                        pass
+            decoded_file = base64.b64decode(img_str)
+            return ContentFile(decoded_file, name=file_name)
+        except Exception as decode_exc:
+            logger.error(
+                "No se pudo decodificar image base64: %s",
+                decode_exc,
+                exc_info=True,
+            )
+            return None
+
+    def _extract_images_from_request(self, request, data, logger):
+        """
+        Extrae hasta 3 imágenes desde request.FILES y/o data (base64).
+
+        Busca en los siguientes keys:
+        - image, image_2, image_3 (nombres primarios)
+        - attachment, attachment_2, attachment_3 (nombres alternativos)
+        - file, file_2, file_3 (nombres alternativos)
+
+        Args:
+            request: HTTP request
+            data: Request data (puede ser modificado)
+            logger: Logger para registrar eventos
+
+        Returns:
+            dict: {image: file, image_2: file, image_3: file}
+        """
+        image_files = {"image": None, "image_2": None, "image_3": None}
+
+        # Mapeo de nombres alternativos a nombres canónicos
+        field_mapping = {
+            "image": ["image", "attachment", "file"],
+            "image_2": ["image_2", "attachment_2", "file_2"],
+            "image_3": ["image_3", "attachment_3", "file_3"],
+        }
+
+        # 1) Extraer archivos desde request.FILES
+        for canonical, alternatives in field_mapping.items():
+            for key in alternatives:
+                if key in request.FILES:
+                    image_files[canonical] = request.FILES[key]
+                    break
+
+        # 2) Si hay archivos sueltos sin nombre específico, asignarlos en orden
+        assigned_files = {k for k, v in image_files.items() if v is not None}
+        unassigned_slots = [k for k in ["image", "image_2", "image_3"] if k not in assigned_files]
+
+        for key in request.FILES:
+            if key not in sum(field_mapping.values(), []):
+                if unassigned_slots:
+                    slot = unassigned_slots.pop(0)
+                    image_files[slot] = request.FILES[key]
+
+        # 3) Procesar base64 en data si no hay archivo
+        try:
+            data = data.copy()
+        except Exception:
+            pass
+
+        for canonical, alternatives in field_mapping.items():
+            if image_files[canonical] is None:
+                for key in alternatives:
+                    value = data.get(key)
+                    if value and isinstance(value, str):
+                        decoded = self._decode_base64_image(value, logger)
+                        if decoded:
+                            image_files[canonical] = decoded
+                            data[canonical] = decoded
+                            break
+
+        # 4) Inyectar archivos en data si no están
+        for canonical, file in image_files.items():
+            if file and not data.get(canonical):
+                data[canonical] = file
+
+        return image_files, data
+
     def create(self, request, *args, **kwargs):
         logger = logging.getLogger("django")
         try:
             data = request.data
-            # 1) Intenta obtener archivo desde request.FILES (image/attachment/file)
-            image_file = None
-            for key in ["image", "attachment", "file"]:
-                if key in request.FILES:
-                    image_file = request.FILES[key]
-                    break
-            if not image_file and request.FILES:
-                # Si vino con otro nombre, toma el primero
-                image_file = next(iter(request.FILES.values()))
 
-            # 2) Si hay archivo y no está en data, injértalo
-            if image_file and not data.get("image"):
-                try:
-                    data = data.copy()
-                except Exception:
-                    pass
-                data["image"] = image_file
+            # Extraer hasta 3 imágenes
+            image_files, data = self._extract_images_from_request(request, data, logger)
 
-            # 3) Si no hay archivo pero viene un string/base64 en data["image"], decodificarlo
-            if (
-                not image_file
-                and data.get("image")
-                and isinstance(data.get("image"), str)
-            ):
-                img_str = data.get("image")
-                file_name = f"{uuid.uuid4().hex}.jpg"
-                try:
-                    if img_str.startswith("data:") and "," in img_str:
-                        header, encoded = img_str.split(",", 1)
-                        if ";base64" in header:
-                            img_str = encoded
-                            try:
-                                ext = header.split("/")[1].split(";")[0]
-                                file_name = f"{uuid.uuid4().hex}.{ext}"
-                            except Exception:
-                                pass
-                    decoded_file = base64.b64decode(img_str)
-                    image_file = ContentFile(decoded_file, name=file_name)
-                    try:
-                        data = data.copy()
-                    except Exception:
-                        pass
-                    data["image"] = image_file
-                except Exception as decode_exc:
-                    logger.error(
-                        "No se pudo decodificar image base64: %s",
-                        decode_exc,
-                        exc_info=True,
-                    )
-            # Si no hay archivo pero viene un string base64 en data["image"], decodificarlo
-            if (
-                not image_file
-                and data.get("image")
-                and isinstance(data.get("image"), str)
-            ):
-                img_str = data.get("image")
-                file_name = f"{uuid.uuid4().hex}.jpg"
-                try:
-                    if img_str.startswith("data:") and "," in img_str:
-                        header, encoded = img_str.split(",", 1)
-                        if ";base64" in header:
-                            img_str = encoded
-                            try:
-                                ext = header.split("/")[1].split(";")[0]
-                                file_name = f"{uuid.uuid4().hex}.{ext}"
-                            except Exception:
-                                pass
-                    decoded_file = base64.b64decode(img_str)
-                    image_file = ContentFile(decoded_file, name=file_name)
-                    try:
-                        data = data.copy()
-                    except Exception:
-                        pass
-                    data["image"] = image_file
-                except Exception as decode_exc:
-                    logger.error(
-                        "No se pudo decodificar image base64: %s",
-                        decode_exc,
-                        exc_info=True,
-                    )
-            logger.error(
-                "POST /api/form-answers/ files=%s data_keys=%s image_type=%s storage=%s bucket=%s media_url=%s",
+            logger.info(
+                "POST /api/form-answers/ files=%s data_keys=%s images_found=%s",
                 list(request.FILES.keys()),
                 list(getattr(data, "keys", lambda: [])()),
-                type(data.get("image")),
-                getattr(settings, "DEFAULT_FILE_STORAGE", None),
-                getattr(settings, "GS_BUCKET_NAME", None),
-                getattr(settings, "MEDIA_URL", None),
+                {k: bool(v) for k, v in image_files.items()},
             )
+
             # Si es un array, procesar cada respuesta
             if isinstance(data, list):
                 results = []
@@ -865,7 +1082,8 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
                 return Response(
                     {"results": results, "errors": errors}, status=status_code
                 )
-            # Si es un solo objeto, procesar como antes
+
+            # Si es un solo objeto, procesar
             question_id = data.get("question_id")
             work_order_id = data.get("work_order_id")
             if not question_id or not work_order_id:
@@ -873,54 +1091,62 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
                     {"detail": "question_id y work_order_id son requeridos."},
                     status=400,
                 )
+
             instance = FormAnswers.objects.filter(
                 question_id=question_id, work_order_id=work_order_id
             ).first()
+
+            # Preparar kwargs con las imágenes
+            save_kwargs = {}
+            for field_name in ["image", "image_2", "image_3"]:
+                img = image_files.get(field_name)
+                if img:
+                    save_kwargs[field_name] = img
+
             if instance:
                 serializer = self.get_serializer(instance, data=data, partial=True)
                 serializer.is_valid(raise_exception=True)
-                logger.error(
-                    "FormAnswers update validated keys=%s image=%s type=%s name=%s size=%s storage=%s bucket=%s media_url=%s",
+                logger.info(
+                    "FormAnswers update validated keys=%s images=%s",
                     list(serializer.validated_data.keys()),
-                    bool(serializer.validated_data.get("image")),
-                    type(serializer.validated_data.get("image")),
-                    getattr(serializer.validated_data.get("image"), "name", None),
-                    getattr(serializer.validated_data.get("image"), "size", None),
-                    getattr(settings, "DEFAULT_FILE_STORAGE", None),
-                    getattr(settings, "GS_BUCKET_NAME", None),
-                    getattr(settings, "MEDIA_URL", None),
+                    {k: bool(v) for k, v in save_kwargs.items()},
                 )
-                obj = serializer.save(image=image_file or serializer.validated_data.get("image"))
-                if image_file and not obj.image:
-                    ext = (image_file.name or "upload").split(".")[-1]
-                    filename = f"form_answers/{uuid.uuid4().hex}.{ext}"
-                    saved_path = default_storage.save(filename, image_file)
-                    obj.image.name = saved_path
-                    obj.save(update_fields=["image"])
-                return Response(FormAnswersSerializer(obj).data, status=200)
+
+                # Merge con validated_data si no viene en save_kwargs
+                for field_name in ["image", "image_2", "image_3"]:
+                    if field_name not in save_kwargs:
+                        val = serializer.validated_data.get(field_name)
+                        if val:
+                            save_kwargs[field_name] = val
+
+                obj = serializer.save(**save_kwargs)
+                return Response(
+                    FormAnswersSerializer(obj, context={"request": request}).data,
+                    status=200
+                )
             else:
                 serializer = self.get_serializer(data=data)
                 serializer.is_valid(raise_exception=True)
-                logger.error(
-                    "FormAnswers create validated keys=%s image=%s type=%s name=%s size=%s storage=%s bucket=%s media_url=%s",
+                logger.info(
+                    "FormAnswers create validated keys=%s images=%s",
                     list(serializer.validated_data.keys()),
-                    bool(serializer.validated_data.get("image")),
-                    type(serializer.validated_data.get("image")),
-                    getattr(serializer.validated_data.get("image"), "name", None),
-                    getattr(serializer.validated_data.get("image"), "size", None),
-                    getattr(settings, "DEFAULT_FILE_STORAGE", None),
-                    getattr(settings, "GS_BUCKET_NAME", None),
-                    getattr(settings, "MEDIA_URL", None),
+                    {k: bool(v) for k, v in save_kwargs.items()},
                 )
-                obj = serializer.save(image=image_file or serializer.validated_data.get("image"))
-                if image_file and not obj.image:
-                    ext = (image_file.name or "upload").split(".")[-1]
-                    filename = f"form_answers/{uuid.uuid4().hex}.{ext}"
-                    saved_path = default_storage.save(filename, image_file)
-                    obj.image.name = saved_path
-                    obj.save(update_fields=["image"])
+
+                # Merge con validated_data si no viene en save_kwargs
+                for field_name in ["image", "image_2", "image_3"]:
+                    if field_name not in save_kwargs:
+                        val = serializer.validated_data.get(field_name)
+                        if val:
+                            save_kwargs[field_name] = val
+
+                obj = serializer.save(**save_kwargs)
                 headers = self.get_success_headers(serializer.data)
-                return Response(FormAnswersSerializer(obj).data, status=201, headers=headers)
+                return Response(
+                    FormAnswersSerializer(obj, context={"request": request}).data,
+                    status=201,
+                    headers=headers
+                )
         except Exception as exc:
             logger.exception(
                 "Error en /api/form-answers/ payload_keys=%s files=%s",
@@ -936,8 +1162,40 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer, **kwargs):
         serializer.save(**kwargs)
 
+    def _download_attachment(self, image_field, logger):
+        """
+        Descarga un adjunto desde GCS.
+
+        Args:
+            image_field: Campo ImageField con la imagen
+            logger: Logger para registrar eventos
+
+        Returns:
+            tuple: (payload, content_type, filename) o (None, None, None) si hay error
+        """
+        if not image_field or not image_field.name:
+            return None, None, None
+
+        try:
+            client = storage.Client(credentials=settings.GS_CREDENTIALS)
+            bucket = client.bucket(settings.GS_BUCKET_NAME)
+            blob = bucket.blob(image_field.name)
+            payload = blob.download_as_bytes()
+            content_type = blob.content_type or "application/octet-stream"
+            filename = os.path.basename(image_field.name)
+            return payload, content_type, filename
+        except Exception as exc:
+            logger.error(
+                "[FormAnswersViewSet] No se pudo descargar %s: %s",
+                image_field.name,
+                exc,
+                exc_info=True,
+            )
+            return None, None, None
+
     @action(detail=True, methods=["get"], url_path="attachment")
     def attachment(self, request, pk=None):
+        """Descarga la imagen principal (image) de una respuesta."""
         answer = self.get_object()
         if not answer.image:
             return Response(
@@ -946,31 +1204,65 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
             )
 
         logger = logging.getLogger("django")
-        try:
-            client = storage.Client(credentials=settings.GS_CREDENTIALS)
-            bucket = client.bucket(settings.GS_BUCKET_NAME)
-            blob = bucket.blob(answer.image.name)
-            payload = blob.download_as_bytes()
-            content_type = blob.content_type or "application/octet-stream"
-        except Exception as exc:
-            logger.error(
-                "[FormAnswersViewSet.attachment] No se pudo descargar %s: %s",
-                answer.image.name,
-                exc,
-                exc_info=True,
-            )
+        payload, content_type, filename = self._download_attachment(answer.image, logger)
+
+        if payload is None:
             return Response(
-                {
-                    "detail": "No se pudo descargar el adjunto desde el almacenamiento.",
-                },
+                {"detail": "No se pudo descargar el adjunto desde el almacenamiento."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
         response = HttpResponse(payload, content_type=content_type)
         response["Content-Length"] = str(len(payload))
-        response["Content-Disposition"] = (
-            f'inline; filename="{os.path.basename(answer.image.name)}"'
-        )
+        response["Content-Disposition"] = f'inline; filename="{filename}"'
+        return response
+
+    @action(detail=True, methods=["get"], url_path="attachment-2")
+    def attachment_2(self, request, pk=None):
+        """Descarga la segunda imagen (image_2) de una respuesta."""
+        answer = self.get_object()
+        if not answer.image_2:
+            return Response(
+                {"detail": "Esta respuesta no tiene segundo adjunto."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        logger = logging.getLogger("django")
+        payload, content_type, filename = self._download_attachment(answer.image_2, logger)
+
+        if payload is None:
+            return Response(
+                {"detail": "No se pudo descargar el adjunto desde el almacenamiento."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        response = HttpResponse(payload, content_type=content_type)
+        response["Content-Length"] = str(len(payload))
+        response["Content-Disposition"] = f'inline; filename="{filename}"'
+        return response
+
+    @action(detail=True, methods=["get"], url_path="attachment-3")
+    def attachment_3(self, request, pk=None):
+        """Descarga la tercera imagen (image_3) de una respuesta."""
+        answer = self.get_object()
+        if not answer.image_3:
+            return Response(
+                {"detail": "Esta respuesta no tiene tercer adjunto."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        logger = logging.getLogger("django")
+        payload, content_type, filename = self._download_attachment(answer.image_3, logger)
+
+        if payload is None:
+            return Response(
+                {"detail": "No se pudo descargar el adjunto desde el almacenamiento."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        response = HttpResponse(payload, content_type=content_type)
+        response["Content-Length"] = str(len(payload))
+        response["Content-Disposition"] = f'inline; filename="{filename}"'
         return response
 
 
@@ -1024,10 +1316,14 @@ def clear_work_orders(request):
 
 
 class RolesViewSet(viewsets.ModelViewSet):
-    """API para gestionar roles"""
+    """API para gestionar roles.
+
+    Sin paginación: normalmente hay pocos roles.
+    """
 
     queryset = Roles.objects.all()
     serializer_class = RolesSerializer
+    pagination_class = None  # Deshabilitar paginación para roles
 
     def create(self, request, *args, **kwargs):
         try:
@@ -1059,10 +1355,14 @@ class RolesViewSet(viewsets.ModelViewSet):
 
 
 class PermissionsViewSet(viewsets.ModelViewSet):
-    """API para gestionar permisos"""
+    """API para gestionar permisos.
+
+    Sin paginación: normalmente hay pocos permisos.
+    """
 
     queryset = Permissions.objects.all()
     serializer_class = PermissionsSerializer
+    pagination_class = None  # Deshabilitar paginación para permisos
 
     def create(self, request, *args, **kwargs):
         try:

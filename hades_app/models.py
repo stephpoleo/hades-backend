@@ -435,7 +435,19 @@ class FormAnswers(models.Model):
         upload_to="form_answers/",
         blank=True,
         null=True,
-        help_text="Archivo de imagen de la respuesta",
+        help_text="Archivo de imagen 1 de la respuesta",
+    )
+    image_2 = models.ImageField(
+        upload_to="form_answers/",
+        blank=True,
+        null=True,
+        help_text="Archivo de imagen 2 de la respuesta",
+    )
+    image_3 = models.ImageField(
+        upload_to="form_answers/",
+        blank=True,
+        null=True,
+        help_text="Archivo de imagen 3 de la respuesta",
     )
     clave_eds_fk = models.CharField(
         max_length=20,

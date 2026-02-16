@@ -14,31 +14,52 @@ import os
 import json
 from dotenv import load_dotenv, dotenv_values
 from pathlib import Path
-from google.cloud import secretmanager
-from google.oauth2 import service_account
 import logging
+
+# GCP imports - pueden fallar en entornos locales sin credenciales
+try:
+    from google.cloud import secretmanager
+    from google.oauth2 import service_account
+    GCP_AVAILABLE = True
+except ImportError:
+    GCP_AVAILABLE = False
+    secretmanager = None
+    service_account = None
 
 
 # Función para leer el secreto y guardar el archivo temporalmente
 def get_gcp_credentials_file():
-    client = secretmanager.SecretManagerServiceClient()
-    secret_name = (
-        "projects/hades-backend-prod/secrets/GCP_STORAGE_CREDENTIALS/versions/latest"
-    )
-    response = client.access_secret_version(request={"name": secret_name})
-    credentials_json = response.payload.data.decode("UTF-8")
-    temp_path = "/tmp/gcp_storage_credentials.json"
-    with open(temp_path, "w") as f:
-        f.write(credentials_json)
-    return temp_path
+    """Obtiene credenciales de GCP desde Secret Manager. Retorna None si no está disponible."""
+    if not GCP_AVAILABLE:
+        return None
+    try:
+        client = secretmanager.SecretManagerServiceClient()
+        secret_name = (
+            "projects/hades-backend-prod/secrets/GCP_STORAGE_CREDENTIALS/versions/latest"
+        )
+        response = client.access_secret_version(request={"name": secret_name})
+        credentials_json = response.payload.data.decode("UTF-8")
+        temp_path = "/tmp/gcp_storage_credentials.json"
+        with open(temp_path, "w") as f:
+            f.write(credentials_json)
+        return temp_path
+    except Exception as e:
+        logging.warning(f"[GCP_STORAGE] No se pudieron obtener credenciales GCP: {e}")
+        return None
 
 
+# Configuración de GCP Storage - diferida para permitir migraciones locales
 GS_BUCKET_NAME = "hades-media"
 DEFAULT_FILE_STORAGE = "storages.backends.gcloud.GoogleCloudStorage"
 MEDIA_URL = f"https://storage.googleapis.com/{GS_BUCKET_NAME}/"
-GS_CREDENTIALS = service_account.Credentials.from_service_account_file(
-    get_gcp_credentials_file()
-)
+
+# Intentar cargar credenciales GCP solo si están disponibles
+_gcp_creds_file = get_gcp_credentials_file()
+if _gcp_creds_file and GCP_AVAILABLE:
+    GS_CREDENTIALS = service_account.Credentials.from_service_account_file(_gcp_creds_file)
+else:
+    GS_CREDENTIALS = None
+    logging.warning("[GCP_STORAGE] Ejecutando sin credenciales GCP - storage no disponible")
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -338,11 +359,15 @@ for source in raw_profile_order:
         continue
 
     prefix = f"EDS_{source.upper()}_DB"
+    logging.info(f"[EDS_CONFIG] Trying to build connection for source={source}, prefix={prefix}")
+    logging.info(f"[EDS_CONFIG] {prefix}_NAME={env(f'{prefix}_NAME', 'NOT_SET')}")
+    logging.info(f"[EDS_CONFIG] {prefix}_HOST={env(f'{prefix}_HOST', 'NOT_SET')}")
     config = _build_eds_connection(prefix)
     if not config:
         config = _build_eds_connection_from_json(source)
     if config:
         eds_connections[source] = config
+        logging.info(f"[EDS_CONFIG] Successfully configured connection for {source}")
 
 EDS_AVAILABLE_SOURCES = tuple(eds_connections.keys())
 
@@ -354,8 +379,15 @@ if eds_connections:
 
     DATABASES["eds"] = eds_connections[selected_key]
     EDS_ACTIVE_SOURCE = selected_key
+    logging.info(f"[EDS_CONFIG] EDS database configured: source={selected_key}")
 else:
     EDS_ACTIVE_SOURCE = None
+    logging.warning(
+        f"[EDS_CONFIG] No EDS database configured! "
+        f"EDS_PROFILE={EDS_REQUESTED_PROFILE}, "
+        f"EDS_SOURCES={EDS_PROFILE_FALLBACK}, "
+        f"Available connections: {list(eds_connections.keys()) if eds_connections else 'none'}"
+    )
 
 
 # Password validation

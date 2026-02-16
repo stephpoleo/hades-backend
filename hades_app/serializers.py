@@ -166,6 +166,8 @@ class UsersSerializer(serializers.ModelSerializer):
     eds_info = serializers.SerializerMethodField(
         read_only=True
     )  # Información completa de EDS
+    assigned_forms = serializers.SerializerMethodField(read_only=True)
+    completed_forms = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Users
@@ -176,15 +178,59 @@ class UsersSerializer(serializers.ModelSerializer):
         }
 
     def get_eds_info(self, obj):
-        """Obtener informacion completa de la EDS asociada por clave_eds_fk"""
-        if obj.clave_eds_fk:
-            try:
-                # id_eds_pk es cod_eds en erelis = clave_eds
-                eds = EDS.objects.get(id_eds_pk=obj.clave_eds_fk)
+        """Obtener informacion completa de la EDS asociada por clave_eds_fk (optimizado con batch)."""
+        if not obj.clave_eds_fk:
+            return None
+
+        # Usar datos batch del contexto si están disponibles
+        eds_map = self.context.get('eds_map', {})
+        if eds_map:
+            eds = eds_map.get(obj.clave_eds_fk)
+            if eds:
                 return EDSSerializer(eds).data
-            except EDS.DoesNotExist:
-                return None
-        return None
+            return None
+
+        # Fallback: query individual
+        try:
+            eds = EDS.objects.get(id_eds_pk=obj.clave_eds_fk)
+            return EDSSerializer(eds).data
+        except EDS.DoesNotExist:
+            return None
+
+    def get_assigned_forms(self, obj):
+        """Total de work orders asignadas al usuario."""
+        # Usar stats precalculados del contexto (optimización N+1)
+        user_stats = self.context.get("user_stats", {})
+        if user_stats:
+            stat = user_stats.get(obj.id_usr_pk, {})
+            return stat.get("assigned", 0)
+        # Fallback: query directa (para detail view)
+        return WorkOrder.objects.filter(user_id=obj.id_usr_pk).count()
+
+    def get_completed_forms(self, obj):
+        """Total de work orders completadas por el usuario.
+
+        Una WorkOrder está completada cuando tiene respuestas >= preguntas del template.
+        """
+        # Usar stats precalculados del contexto (optimización N+1)
+        user_stats = self.context.get("user_stats", {})
+        if user_stats:
+            stat = user_stats.get(obj.id_usr_pk, {})
+            return stat.get("completed", 0)
+        # Fallback: query directa (para detail view)
+        completed = 0
+        work_orders = WorkOrder.objects.filter(user_id=obj.id_usr_pk).select_related(
+            "form_template"
+        )
+        for wo in work_orders:
+            if wo.form_template:
+                total_questions = wo.form_template.questions.count()
+                total_answers = FormAnswers.objects.filter(work_order=wo).exclude(
+                    answer__isnull=True
+                ).exclude(answer__exact="").count()
+                if total_questions > 0 and total_answers >= total_questions:
+                    completed += 1
+        return completed
 
     def create(self, validated_data):
         """Crear usuario con contraseña encriptada"""
@@ -242,6 +288,9 @@ class FormQuestionsSerializer(serializers.ModelSerializer):
 
 class FormTemplateSerializer(serializers.ModelSerializer):
     questions = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+    assignments_count = serializers.SerializerMethodField()
+    completed_count = serializers.SerializerMethodField()
+    assigned_users = serializers.SerializerMethodField()
 
     class Meta:
         model = FormTemplate
@@ -253,14 +302,75 @@ class FormTemplateSerializer(serializers.ModelSerializer):
             "updated_at",
             "is_active",
             "questions",
+            "assignments_count",
+            "completed_count",
+            "assigned_users",
         ]
+
+    def get_assignments_count(self, obj):
+        """Cantidad de usuarios únicos asignados a este formulario."""
+        return (
+            WorkOrder.objects.filter(form_template=obj, user_id__isnull=False)
+            .values("user_id")
+            .distinct()
+            .count()
+        )
+
+    def get_completed_count(self, obj):
+        """Cantidad de work orders completadas para este formulario."""
+        from django.db.models import Count, Q
+
+        total_questions = obj.questions.count()
+        if total_questions == 0:
+            return 0
+
+        # Query optimizada: anotar cada work order con conteo de respuestas
+        return (
+            WorkOrder.objects.filter(form_template=obj)
+            .annotate(
+                answers_count=Count(
+                    "formanswers",
+                    filter=Q(formanswers__answer__isnull=False)
+                    & ~Q(formanswers__answer__exact=""),
+                )
+            )
+            .filter(answers_count__gte=total_questions)
+            .count()
+        )
+
+    def get_assigned_users(self, obj):
+        """Lista de usuarios asignados con work_order_id para gestión."""
+        work_orders = WorkOrder.objects.filter(form_template=obj).values(
+            "id", "user_id", "clave_eds"
+        )
+
+        # Batch query de usuarios para evitar N+1
+        user_ids = {wo["user_id"] for wo in work_orders if wo["user_id"]}
+        users_map = {}
+        if user_ids:
+            users_map = {
+                u.id_usr_pk: u for u in Users.objects.filter(id_usr_pk__in=user_ids)
+            }
+
+        result = []
+        for wo in work_orders:
+            user = users_map.get(wo["user_id"]) if wo["user_id"] else None
+            result.append(
+                {
+                    "work_order_id": wo["id"],
+                    "user_id": wo["user_id"],
+                    "user_name": user.name if user else None,
+                    "clave_eds": wo["clave_eds"],
+                }
+            )
+        return result
 
 
 # Ahora los serializers que los usan
 class WorkOrderSerializer(serializers.ModelSerializer):
     form_template = FormTemplateSerializer()
     user = UsersSerializer(source="get_user", read_only=True)
-    user_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
+    user_id = serializers.IntegerField(required=False, allow_null=True)  # Removed write_only to expose in GET responses
     eds_id = serializers.CharField(
         write_only=True, required=False, allow_null=True, allow_blank=True
     )
@@ -295,7 +405,6 @@ class WorkOrderSerializer(serializers.ModelSerializer):
         return obj.form_template.questions.count() if obj.form_template else 0
 
     def get_total_answers(self, obj):
-        # Solo contar respuestas que no estén vacías ni nulas
         return (
             FormAnswers.objects.filter(work_order=obj)
             .exclude(answer__isnull=True)
@@ -341,11 +450,15 @@ class WorkOrderSerializer(serializers.ModelSerializer):
 
     def get_answers(self, obj):
         # Devuelve las respuestas por pregunta para esta orden de trabajo
+        if not obj.form_template:
+            return []
+
         answers = (
             FormAnswers.objects.filter(work_order=obj)
             .select_related("question", "work_order")
             .order_by("question_id", "-id")
         )
+
         serialized_answers = {}
         for answer in answers:
             if answer.question_id in serialized_answers:
@@ -355,7 +468,7 @@ class WorkOrderSerializer(serializers.ModelSerializer):
             ).data
 
         result = []
-        for question in obj.form_template.questions.all():
+        for question in obj.form_template.questions.all().order_by("question_order"):
             serialized = serialized_answers.get(question.id) or {}
             result.append(
                 {
@@ -366,9 +479,14 @@ class WorkOrderSerializer(serializers.ModelSerializer):
                     "allow_attachments": question.allow_attachments,
                     "answer": serialized.get("answer"),
                     "comments": serialized.get("comments"),
+                    # Campos de imagen principal (retrocompatibilidad)
                     "image": serialized.get("image"),
                     "attachment": serialized.get("attachment"),
                     "has_attachment": serialized.get("has_attachment", False),
+                    # Campos para múltiples imágenes
+                    "image_2": serialized.get("image_2"),
+                    "image_3": serialized.get("image_3"),
+                    "images": serialized.get("images", []),
                 }
             )
         return result
@@ -457,32 +575,37 @@ class WorkOrderSerializer(serializers.ModelSerializer):
 
     def get_user(self, obj):
         try:
+            if obj.user_id is None:
+                return None
             user = Users.objects.get(id_usr_pk=obj.user_id)
             return UsersSerializer(user).data
         except Users.DoesNotExist:
             return None
+        except Exception as e:
+            logging.getLogger("django").warning(
+                f"Error getting user for work_order {obj.id}: {e}"
+            )
+            return None
 
     def get_eds(self, obj):
-        """Obtener informacion completa de la EDS por clave_eds o desde form answers"""
-        clave_eds = obj.clave_eds
+        """Obtener informacion completa de la EDS por clave_eds"""
+        try:
+            clave_eds = obj.clave_eds
 
-        # Si el work order no tiene clave_eds, buscar en los form answers
-        if not clave_eds:
-            first_answer = FormAnswers.objects.filter(
-                work_order=obj,
-                clave_eds_fk__isnull=False
-            ).exclude(clave_eds_fk='').first()
-            if first_answer:
-                clave_eds = first_answer.clave_eds_fk
-
-        if clave_eds:
-            try:
-                # id_eds_pk es cod_eds en erelis = clave_eds
-                eds = EDS.objects.get(id_eds_pk=clave_eds)
-                return EDSSerializer(eds).data
-            except EDS.DoesNotExist:
-                return None
-        return None
+            # Solo usar clave_eds del WorkOrder directamente
+            # Evitar queries adicionales a FormAnswers para prevenir N+1 y timeouts
+            if clave_eds:
+                try:
+                    eds = EDS.objects.get(id_eds_pk=clave_eds)
+                    return EDSSerializer(eds).data
+                except EDS.DoesNotExist:
+                    return None
+            return None
+        except Exception as e:
+            logging.getLogger("django").warning(
+                f"Error getting EDS for work_order {obj.id}: {e}"
+            )
+            return None
 
     def create(self, validated_data):
         """
@@ -504,8 +627,152 @@ class WorkOrderSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class WorkOrderListSerializer(serializers.ModelSerializer):
+    """
+    Lightweight serializer for WorkOrder list view.
+    Excludes 'answers' field to avoid N+1 queries and timeout issues.
+
+    Optimizado para usar:
+    - Datos batch del contexto (users_map, eds_map)
+    - Anotaciones del queryset (_answers_count, _total_questions)
+    """
+    form_template = FormTemplateSerializer(read_only=True)
+    user = serializers.SerializerMethodField(read_only=True)
+    eds = serializers.SerializerMethodField(read_only=True)
+    total_questions = serializers.SerializerMethodField()
+    total_answers = serializers.SerializerMethodField()
+    completion_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WorkOrder
+        fields = [
+            "id",
+            "date",
+            "form_template",
+            "user",
+            "user_id",
+            "eds",
+            "clave_eds",
+            "total_questions",
+            "total_answers",
+            "completion_status",
+            "start_date_time",
+            "end_date_time",
+        ]
+
+    def get_user(self, obj):
+        """Obtener usuario desde el batch map (evita N+1)."""
+        if obj.user_id is None:
+            return None
+
+        # Usar datos batch del contexto si están disponibles
+        users_map = self.context.get('users_map', {})
+        if users_map:
+            user = users_map.get(obj.user_id)
+            if user:
+                # Serializar sin contexto para evitar recursión
+                return {
+                    'id_usr_pk': user.id_usr_pk,
+                    'name': user.name,
+                    'email': user.email,
+                    'role_name': user.role_name,
+                    'clave_eds_fk': user.clave_eds_fk,
+                }
+            return None
+
+        # Fallback: query individual (para detail views)
+        try:
+            user = Users.objects.get(id_usr_pk=obj.user_id)
+            return {
+                'id_usr_pk': user.id_usr_pk,
+                'name': user.name,
+                'email': user.email,
+                'role_name': user.role_name,
+                'clave_eds_fk': user.clave_eds_fk,
+            }
+        except Users.DoesNotExist:
+            return None
+
+    def get_eds(self, obj):
+        """Obtener EDS desde el batch map (evita N+1)."""
+        if not obj.clave_eds:
+            return None
+
+        # Usar datos batch del contexto si están disponibles
+        eds_map = self.context.get('eds_map', {})
+        if eds_map:
+            eds = eds_map.get(obj.clave_eds)
+            if eds:
+                return {
+                    'id_eds_pk': eds.id_eds_pk,
+                    'name': eds.name,
+                    'plaza': eds.plaza,
+                    'state': eds.state,
+                    'municipality': eds.municipality,
+                }
+            return None
+
+        # Fallback: query individual
+        try:
+            eds = EDS.objects.get(id_eds_pk=obj.clave_eds)
+            return {
+                'id_eds_pk': eds.id_eds_pk,
+                'name': eds.name,
+                'plaza': eds.plaza,
+                'state': eds.state,
+                'municipality': eds.municipality,
+            }
+        except EDS.DoesNotExist:
+            return None
+
+    def get_total_questions(self, obj):
+        """Usar anotación si está disponible."""
+        # Si viene anotado del queryset
+        if hasattr(obj, '_total_questions'):
+            return obj._total_questions or 0
+        # Fallback
+        return obj.form_template.questions.count() if obj.form_template else 0
+
+    def get_total_answers(self, obj):
+        """Usar anotación si está disponible."""
+        # Si viene anotado del queryset
+        if hasattr(obj, '_answers_count'):
+            return obj._answers_count or 0
+        # Fallback
+        return (
+            FormAnswers.objects.filter(work_order=obj)
+            .exclude(answer__isnull=True)
+            .exclude(answer__exact="")
+            .count()
+        )
+
+    def get_completion_status(self, obj):
+        """Calcular status usando anotaciones optimizadas."""
+        total_q = self.get_total_questions(obj)
+        total_a = self.get_total_answers(obj)
+        if total_a == 0:
+            return "pending"
+        if total_q > 0 and total_a < total_q:
+            return "draft"
+        if total_q > 0 and total_a >= total_q:
+            return "completed"
+        return "pending"
+
+
 class FormAnswersSerializer(serializers.ModelSerializer):
-    def _upload_image_to_gcs(self, instance, image, logger):
+    def _upload_image_to_gcs(self, instance, image, logger, field_name="image"):
+        """
+        Sube una imagen a GCS y actualiza el campo correspondiente en la instancia.
+
+        Args:
+            instance: Instancia de FormAnswers
+            image: Archivo de imagen a subir
+            logger: Logger para registrar eventos
+            field_name: Nombre del campo a actualizar (image, image_2, image_3)
+
+        Returns:
+            str: Path del archivo en GCS
+        """
         question_id = getattr(instance, "question_id", None) or getattr(
             instance, "question", None
         )
@@ -527,9 +794,10 @@ class FormAnswersSerializer(serializers.ModelSerializer):
             else "unknown"
         )
         base_name = getattr(image, "name", "attachment")
+        # Incluir el field_name en el path para diferenciar las imágenes
         filename = (
             f"form_answers/wo_{work_order_id}/q_{question_id}/"
-            f"{uuid.uuid4().hex}_{base_name}"
+            f"{field_name}_{uuid.uuid4().hex}_{base_name}"
         )
         client = storage.Client(credentials=settings.GS_CREDENTIALS)
         bucket = client.bucket(settings.GS_BUCKET_NAME)
@@ -539,22 +807,26 @@ class FormAnswersSerializer(serializers.ModelSerializer):
             image,
             content_type=getattr(image, "content_type", "application/octet-stream"),
         )
-        instance.image = filename
-        instance.save(update_fields=["image"])
+        setattr(instance, field_name, filename)
+        instance.save(update_fields=[field_name])
         try:
-            instance.refresh_from_db(fields=["image"])
+            instance.refresh_from_db(fields=[field_name])
         except Exception:
             pass
-        logger.error(
-            "[FormAnswersSerializer] Imagen subida manualmente a GCS: %s", filename
+        logger.info(
+            "[FormAnswersSerializer] Imagen %s subida a GCS: %s", field_name, filename
         )
         return filename
 
     def create(self, validated_data):
         logger = logging.getLogger("django")
+        # Extraer las 3 imágenes del validated_data
         image = validated_data.pop("image", None)
-        logger.error(
-            f"[FormAnswersSerializer.create] validated_data keys: {list(validated_data.keys())}, image: {image}, type: {type(image)}"
+        image_2 = validated_data.pop("image_2", None)
+        image_3 = validated_data.pop("image_3", None)
+        logger.info(
+            f"[FormAnswersSerializer.create] validated_data keys: {list(validated_data.keys())}, "
+            f"image: {bool(image)}, image_2: {bool(image_2)}, image_3: {bool(image_3)}"
         )
 
         # Lógica para establecer clave_eds_fk
@@ -577,31 +849,50 @@ class FormAnswersSerializer(serializers.ModelSerializer):
                 )
 
         instance = super(FormAnswersSerializer, self).create(validated_data)
-        if image:
-            try:
-                self._upload_image_to_gcs(instance, image, logger)
-            except Exception as exc:
-                logger.error(
-                    f"[FormAnswersSerializer.create] ERROR al subir imagen manualmente a GCS: {exc}",
-                    exc_info=True,
-                )
-        else:
-            logger.error(
-                "[FormAnswersSerializer.create] No se recibió imagen para guardar."
-            )
+
+        # Subir cada imagen que se haya recibido
+        images_to_upload = [
+            ("image", image),
+            ("image_2", image_2),
+            ("image_3", image_3),
+        ]
+        for field_name, img in images_to_upload:
+            if img:
+                try:
+                    self._upload_image_to_gcs(instance, img, logger, field_name)
+                except Exception as exc:
+                    logger.error(
+                        f"[FormAnswersSerializer.create] ERROR al subir {field_name} a GCS: {exc}",
+                        exc_info=True,
+                    )
+
         return instance
 
     def update(self, instance, validated_data):
+        logger = logging.getLogger("django")
+        # Extraer las 3 imágenes del validated_data
         image = validated_data.pop("image", None)
+        image_2 = validated_data.pop("image_2", None)
+        image_3 = validated_data.pop("image_3", None)
+
         instance = super(FormAnswersSerializer, self).update(instance, validated_data)
-        if image:
-            try:
-                self._upload_image_to_gcs(instance, image, logging.getLogger("django"))
-            except Exception as exc:
-                logging.getLogger("django").error(
-                    f"[FormAnswersSerializer.update] ERROR al subir imagen manualmente a GCS: {exc}",
-                    exc_info=True,
-                )
+
+        # Subir cada imagen que se haya recibido
+        images_to_upload = [
+            ("image", image),
+            ("image_2", image_2),
+            ("image_3", image_3),
+        ]
+        for field_name, img in images_to_upload:
+            if img:
+                try:
+                    self._upload_image_to_gcs(instance, img, logger, field_name)
+                except Exception as exc:
+                    logger.error(
+                        f"[FormAnswersSerializer.update] ERROR al subir {field_name} a GCS: {exc}",
+                        exc_info=True,
+                    )
+
         return instance
 
     question = FormQuestionsSerializer(read_only=True)
@@ -620,6 +911,8 @@ class FormAnswersSerializer(serializers.ModelSerializer):
     )
     work_order_name = serializers.SerializerMethodField(read_only=True)
     image = serializers.ImageField(required=False, allow_null=True)
+    image_2 = serializers.ImageField(required=False, allow_null=True)
+    image_3 = serializers.ImageField(required=False, allow_null=True)
     clave_eds_fk = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     eds_info = serializers.SerializerMethodField(read_only=True)
 
@@ -637,6 +930,12 @@ class FormAnswersSerializer(serializers.ModelSerializer):
                 return EDSSerializer(eds).data
             except EDS.DoesNotExist:
                 return None
+            except Exception as e:
+                # Handle case where EDS database is not available
+                logging.getLogger("django").warning(
+                    f"Error getting EDS info for answer {obj.id}: {e}"
+                )
+                return None
         return None
 
     class Meta:
@@ -652,6 +951,8 @@ class FormAnswersSerializer(serializers.ModelSerializer):
             "area",
             "comments",
             "image",
+            "image_2",
+            "image_3",
             "clave_eds_fk",
             "eds_info",
         ]
@@ -660,46 +961,51 @@ class FormAnswersSerializer(serializers.ModelSerializer):
             "work_order": {"required": False},
         }
 
+    def _get_image_url(self, image_field, instance, logger):
+        """
+        Genera URL firmada para un campo de imagen.
+
+        Args:
+            image_field: Campo ImageField de la instancia
+            instance: Instancia de FormAnswers
+            logger: Logger para registrar eventos
+
+        Returns:
+            str or None: URL firmada de la imagen
+        """
+        if not image_field:
+            return None
+
+        attachment_url = None
+        try:
+            attachment_url = _build_signed_url(image_field)
+        except Exception as exc:
+            logger.exception("Error firmando URL de imagen: %s", exc)
+            attachment_url = None
+
+        if not attachment_url:
+            attachment_url = _build_media_url(image_field)
+
+        if not attachment_url:
+            attachment_url = _build_backend_attachment_url(
+                instance, self.context.get("request")
+            )
+
+        return attachment_url
+
     def to_representation(self, instance):
         logger = logging.getLogger("django")
         rep = super().to_representation(instance)
         rep["question_id"] = instance.question.id if instance.question else None
         rep["work_order_id"] = instance.work_order.id if instance.work_order else None
-        attachment_url = None
-        logger.error(
-            f"[DEBUG-FA] instance.id={getattr(instance, 'id', None)} image={getattr(instance, 'image', None)} image.name={getattr(getattr(instance, 'image', None), 'name', None)}"
-        )
-        if instance.image:
-            try:
-                attachment_url = _build_signed_url(instance.image)
-                logger.error(f"[DEBUG-FA] _build_signed_url result: {attachment_url}")
-            except Exception as exc:  # pragma: no cover
-                logger.exception("Error firmando URL de imagen (FA): %s", exc)
-                attachment_url = None
-            if not attachment_url:
-                attachment_url = _build_media_url(instance.image)
-                logger.error(f"[DEBUG-FA] _build_media_url result: {attachment_url}")
-                if attachment_url:
-                    logger.info(
-                        "[FormAnswersSerializer] URL pública usada para %s",
-                        getattr(instance.image, "name", None),
-                    )
-            if not attachment_url:
-                logger.error(
-                    "[FormAnswersSerializer] Usando endpoint backend como fallback para imagen %s",
-                    getattr(instance.image, "name", None),
-                )
-                attachment_url = _build_backend_attachment_url(
-                    instance, self.context.get("request")
-                )
-                logger.error(
-                    f"[DEBUG-FA] _build_backend_attachment_url result: {attachment_url}"
-                )
-        else:
-            # Intentar inferir el path de la imagen desde GCS si sabemos work_order y question
-            logger.error(
-                "[DEBUG-FA] instance.image is None or empty, intentando buscar en GCS"
-            )
+
+        # Generar URLs para las 3 imágenes
+        image_url = self._get_image_url(instance.image, instance, logger)
+        image_2_url = self._get_image_url(instance.image_2, instance, logger)
+        image_3_url = self._get_image_url(instance.image_3, instance, logger)
+
+        # Si no hay imagen principal, intentar buscar en GCS (fallback legacy)
+        if not image_url and not instance.image:
             wo = getattr(instance, "work_order_id", None) or getattr(
                 instance, "work_order", None
             )
@@ -709,7 +1015,7 @@ class FormAnswersSerializer(serializers.ModelSerializer):
             wo_id = wo.id if hasattr(wo, "id") else wo
             q_id = q.id if hasattr(q, "id") else q
             bucket_name = getattr(settings, "GS_BUCKET_NAME", None)
-            gcs_client = None
+
             if bucket_name and storage is not None and wo_id and q_id:
                 try:
                     gcs_client = storage.Client(
@@ -718,43 +1024,49 @@ class FormAnswersSerializer(serializers.ModelSerializer):
                     bucket = gcs_client.bucket(bucket_name)
                     prefix = f"form_answers/wo_{wo_id}/q_{q_id}/"
                     blobs = list(bucket.list_blobs(prefix=prefix))
-                    logger.error(
-                        f"[DEBUG-FA] blobs encontrados en {prefix}: {[b.name for b in blobs]}"
-                    )
+
                     if blobs:
-                        # Tomar el más reciente por updated o el primero
-                        blob = sorted(
+                        # Ordenar por fecha, más reciente primero
+                        sorted_blobs = sorted(
                             blobs,
                             key=lambda b: b.updated or b.time_created,
                             reverse=True,
-                        )[0]
+                        )
 
                         class FakeImage:
                             def __init__(self, name):
                                 self.name = name
                                 self.storage = bucket
 
-                        fake_image = FakeImage(blob.name)
-                        attachment_url = _build_signed_url(fake_image)
-                        logger.error(
-                            f"[DEBUG-FA] _build_signed_url (fake) result: {attachment_url}"
-                        )
-                        if not attachment_url:
-                            attachment_url = _build_media_url(fake_image)
-                            logger.error(
-                                f"[DEBUG-FA] _build_media_url (fake) result: {attachment_url}"
-                            )
+                        # Asignar hasta 3 imágenes encontradas
+                        for i, blob in enumerate(sorted_blobs[:3]):
+                            fake_image = FakeImage(blob.name)
+                            url = _build_signed_url(fake_image)
+                            if not url:
+                                url = _build_media_url(fake_image)
+                            if i == 0:
+                                image_url = url
+                            elif i == 1:
+                                image_2_url = url
+                            elif i == 2:
+                                image_3_url = url
                 except Exception as exc:
                     logger.error(
-                        f"[DEBUG-FA] Error buscando imagen en GCS: {exc}", exc_info=True
+                        f"[DEBUG-FA] Error buscando imágenes en GCS: {exc}", exc_info=True
                     )
-            rep["image"] = attachment_url
-            rep["attachment"] = attachment_url
-            rep["has_attachment"] = bool(attachment_url)
-            return rep
-        rep["image"] = attachment_url
-        rep["attachment"] = attachment_url
-        rep["has_attachment"] = bool(attachment_url)
+
+        # Actualizar representación con URLs de las 3 imágenes
+        rep["image"] = image_url
+        rep["image_2"] = image_2_url
+        rep["image_3"] = image_3_url
+
+        # Mantener retrocompatibilidad con campos antiguos
+        rep["attachment"] = image_url
+        rep["has_attachment"] = bool(image_url or image_2_url or image_3_url)
+
+        # Lista de todas las imágenes para facilitar iteración en frontend
+        rep["images"] = [url for url in [image_url, image_2_url, image_3_url] if url]
+
         return rep
 
 

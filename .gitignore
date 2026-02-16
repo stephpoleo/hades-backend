@@ -62,3 +62,9 @@ htmlcov/
 *.env.*
 cloud_sql_proxy.exe
 hades-backend-prod.json
+# Claude Config (submodule - opcional)
+.claude-config/
+
+# Claude Code local settings
+.claude/settings.local.json
+.claude/*.local.json
