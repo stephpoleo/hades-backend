@@ -285,6 +285,16 @@ class EDSViewSet(viewsets.ModelViewSet):
             # Permitir desactivar paginación para dropdowns
             no_pagination = request.query_params.get('no_pagination') == 'true'
 
+            # Search filter: busca por nombre, plaza, estado o municipio (case-insensitive)
+            search = request.query_params.get('search', '').strip()
+            if search:
+                queryset = queryset.filter(
+                    Q(name__icontains=search) |
+                    Q(plaza__icontains=search) |
+                    Q(state__icontains=search) |
+                    Q(municipality__icontains=search)
+                )
+
             # Construir eds_data directamente del queryset (evita N+1)
             def build_eds_data(qs):
                 return [
@@ -535,10 +545,12 @@ class UsersViewSet(viewsets.ModelViewSet):
             # Permitir desactivar paginación para dropdowns
             no_pagination = request.query_params.get('no_pagination') == 'true'
 
-            # Search filter: busca por nombre (case-insensitive)
+            # Search filter: busca por nombre o email (case-insensitive)
             search = request.query_params.get('search', '').strip()
             if search:
-                queryset = queryset.filter(name__icontains=search)
+                queryset = queryset.filter(
+                    Q(name__icontains=search) | Q(email__icontains=search)
+                )
 
             # EDS filter: filtra por nombre de EDS
             eds_name = request.query_params.get('eds_name', '').strip()
@@ -747,6 +759,10 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
                     u.id_usr_pk: u
                     for u in Users.objects.filter(id_usr_pk__in=user_ids)
                 }
+                # También agregar las EDS de los usuarios al set (fallback para WorkOrders sin clave_eds)
+                for user in users_map.values():
+                    if user.clave_eds_fk:
+                        eds_claves.add(user.clave_eds_fk)
 
             # Batch load EDS
             eds_map = {}
