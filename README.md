@@ -422,15 +422,34 @@ make run-server
 
 #### Comandos Makefile disponibles:
 
+**Desarrollo:**
 - `make help` - Muestra todos los comandos disponibles
 - `make install` - Instala las dependencias de Python
-- `make setup-db` - Configura la base de datos con datos dummy
-- `make reset-db` - Reinicia la base de datos con datos frescos
 - `make run-server` - Inicia el servidor de desarrollo
+- `make shell` - Abre la shell de Django
+
+**Base de datos:**
+- `make migrations` - Genera migraciones
+- `make migrate` - Aplica migraciones
+- `make seed` - Inserta datos dummy
 - `make create-superuser` - Crea un superusuario para el admin
+- `make cloud-proxy` - Abre tunel Cloud SQL
+
+**Testing:**
+- `make test` - Ejecuta todos los tests
+- `make test-v` - Tests con verbosidad media
+- `make test-vv` - Tests con verbosidad alta
+- `make test-fast` - Tests rapidos (--keepdb)
+- `make test-coverage` - Tests con reporte de cobertura
+- `make test-module M=X` - Tests de un modulo especifico
+
+**Deploy:**
+- `make deploy` - Ejecuta tests y despliega a Cloud Run
 - `make clean` - Limpia archivos temporales
-- `make clean-db` - Limpia datos de la base de datos (mantiene estructura)
-- `make drop-tables` - Borra todas las tablas completamente
+
+**Calidad de codigo:**
+- `make lint` - Analiza codigo con pylint
+- `make format` - Formatea codigo con black
 
 #### Instalación de Make:
 
@@ -772,10 +791,54 @@ El proyecto está configurado con:
 
 ## 🧪 Testing
 
-Para ejecutar los tests:
+El proyecto incluye una suite completa de tests unitarios que validan todos los flujos antes de subir cambios a produccion.
+
+### Ejecutar Tests
 
 ```bash
-python manage.py test
+# Todos los tests
+make test
+
+# Tests con nombres visibles
+make test-v
+
+# Tests con detalle completo
+make test-vv
+
+# Tests rapidos (reutiliza DB)
+make test-fast
+
+# Tests con cobertura
+make test-coverage
+
+# Tests de un modulo especifico
+make test-module M=AuthenticationTests
+make test-module M=WorkOrderTests
+make test-module M=DashboardKPIsTests
+```
+
+### Flujos Testeados
+
+| Categoria | Tests | Descripcion |
+|-----------|-------|-------------|
+| **Autenticacion** | 7 | CSRF, login, logout, /me |
+| **Usuarios** | 7 | CRUD, filtros, campos calculados |
+| **EDS** | 4 | CRUD, paginacion, no_pagination |
+| **FormTemplates** | 4 | CRUD, assignments_count, completed_count |
+| **WorkOrders** | 6 | CRUD, filtros, completion_status, grade |
+| **FormQuestions** | 4 | CRUD, tipos, expected_value |
+| **FormAnswers** | 5 | CRUD, upsert, imagenes, by-workorder |
+| **Roles/Permisos** | 4 | CRUD, asignacion |
+| **Dashboard KPIs** | 4 | Metricas, filtros |
+| **Validacion** | 6 | Boolean, percent, expected_value |
+| **Serializers** | 4 | Validaciones, campos |
+| **Paginacion** | 3 | Page size, metadata |
+
+### Reporte de Cobertura
+
+```bash
+make test-coverage
+# Genera reporte HTML en htmlcov/index.html
 ```
 
 ## 📦 Deployment
@@ -787,15 +850,41 @@ El proyecto incluye un script `deploy.ps1` que automatiza el deploy a Google Clo
 ```powershell
 # Windows PowerShell (recomendado)
 powershell -ExecutionPolicy Bypass -File deploy.ps1
+
+# O usando Makefile
+make deploy
 ```
 
-El script `deploy.ps1`:
+El script `deploy.ps1` ejecuta dos pasos:
+
+**STEP 1: Unit Tests**
+- Ejecuta todos los tests automaticamente
+- Si algun test falla, el deploy se **aborta**
+- Muestra mensaje claro de error con instrucciones
+
+**STEP 2: Deploy a Cloud Run**
 - Construye la imagen Docker usando Cloud Build
 - Configura todas las variables de entorno (DJANGO_ENV, DB_*, CORS, EDS_*)
 - Configura los secretos desde Secret Manager
 - Despliega a Cloud Run con la conexión a Cloud SQL
 
-> **Importante**: Usar siempre `deploy.ps1` para deployar, ya que `gcloud run deploy --source .` no preserva las variables de entorno.
+```
+┌─────────────────────────────────────┐
+│  STEP 1: Running Unit Tests         │
+│  ¿Tests pasaron?                    │
+│     NO  → DEPLOY ABORTADO           │
+│     SI  → Continuar                 │
+└─────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────┐
+│  STEP 2: Deploying to Cloud Run     │
+│     → gcloud run deploy             │
+│     → DEPLOY COMPLETED              │
+└─────────────────────────────────────┘
+```
+
+> **Importante**: Usar siempre `deploy.ps1` o `make deploy` para deployar, ya que `gcloud run deploy --source .` no preserva las variables de entorno.
 
 ### Configuración de producción
 
@@ -869,3 +958,23 @@ Este proyecto pertenece a NatGas.
 #### FormAnswers con Clave EDS
 - Serializer modificado para guardar `clave_eds_fk` en respuestas de formulario
 - Permite asociar respuestas directamente con la EDS correspondiente
+
+#### Suite de Unit Tests
+- **+75 tests unitarios** cubriendo todos los flujos del backend
+- Tests organizados en 11 categorias: Auth, Users, EDS, FormTemplates, WorkOrders, FormQuestions, FormAnswers, Roles, Permissions, Dashboard KPIs, Validacion, Serializers, Paginacion
+- Documentacion detallada de cada flujo testeado en `hades_app/tests.py`
+- Mixin reutilizable `TestDataMixin` para crear datos de prueba
+
+#### Deploy con Tests Previos
+- El script `deploy.ps1` ahora ejecuta tests antes de desplegar
+- Si algun test falla, el deploy se aborta automaticamente
+- Mensajes claros de exito/error en cada paso
+
+#### Comandos de Testing en Makefile
+- `make test` - Ejecuta todos los tests
+- `make test-v` - Tests con verbosidad media
+- `make test-vv` - Tests con verbosidad alta
+- `make test-fast` - Tests rapidos (--keepdb)
+- `make test-coverage` - Tests con reporte de cobertura HTML
+- `make test-module M=X` - Tests de un modulo especifico
+- `make deploy` - Ejecuta tests y despliega a Cloud Run
