@@ -869,11 +869,45 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
     """API para gestionar respuestas de formularios.
 
     Sin paginación: las respuestas se cargan por work_order completas.
+
+    Filtros soportados en list():
+        - work_order_id o work_order: ID del work order para filtrar respuestas
+        - form_template: ID del template para filtrar (via work_order.form_template)
     """
 
     # Asegura que DRF procese multipart/form-data y lea request.FILES
     parser_classes = (MultiPartParser, FormParser)
     pagination_class = None  # Deshabilitar paginación para respuestas
+    queryset = FormAnswers.objects.all()
+    serializer_class = FormAnswersSerializer
+
+    def get_queryset(self):
+        """
+        Filtra respuestas por work_order_id y/o form_template.
+
+        IMPORTANTE: Si no se proporciona work_order_id, retorna queryset vacío
+        para evitar cargar todas las respuestas de la BD (puede causar timeout).
+        """
+        queryset = FormAnswers.objects.all().order_by("id")
+
+        # Filtrar por work_order_id (acepta ambos nombres)
+        work_order_id = self.request.query_params.get("work_order_id")
+        if not work_order_id:
+            work_order_id = self.request.query_params.get("work_order")
+
+        if work_order_id:
+            queryset = queryset.filter(work_order_id=work_order_id)
+        else:
+            # Si no hay work_order_id, retornar vacío para evitar cargar todo
+            # Esto previene timeouts en producción
+            return queryset.none()
+
+        # Filtrar por form_template (opcional, via work_order)
+        form_template_id = self.request.query_params.get("form_template")
+        if form_template_id:
+            queryset = queryset.filter(work_order__form_template_id=form_template_id)
+
+        return queryset
 
     @action(detail=False, methods=["get"], url_path="by-workorder")
     def by_workorder(self, request):
@@ -917,10 +951,6 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
         return Response(
             {"deleted": total_deleted, "message": "Respuestas duplicadas eliminadas."}
         )
-
-    """API para gestionar respuestas de formularios"""
-    queryset = FormAnswers.objects.all()
-    serializer_class = FormAnswersSerializer
 
     def list(self, request, *args, **kwargs):
         logger = logging.getLogger("django")
@@ -1759,6 +1789,7 @@ def _compare_with_expected(qtype, expected_value, raw_value):
 
         exp_dec = _to_decimal(expected_value)
         ans_dec = _to_decimal(raw_value)
-        return exp_dec is not None and ans_dec is not None and exp_dec >= ans_dec
+        # La respuesta es correcta si es >= al valor esperado
+        return exp_dec is not None and ans_dec is not None and ans_dec >= exp_dec
 
     return str(raw_value).strip().lower() == str(expected_value).strip().lower()

@@ -11,10 +11,18 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+import sys
 import json
 from dotenv import load_dotenv, dotenv_values
 from pathlib import Path
 import logging
+
+# Detectar si estamos ejecutando tests
+TESTING = len(sys.argv) > 1 and sys.argv[1] == 'test'
+
+# Suprimir logs durante tests
+if TESTING:
+    logging.disable(logging.CRITICAL)
 
 # GCP imports - pueden fallar en entornos locales sin credenciales
 try:
@@ -513,14 +521,24 @@ if FORCE_HTTPS:
 # Ruteo de bases de datos
 DATABASE_ROUTERS = ["hades_app.db_routers.EDSRouter"] if "eds" in DATABASES else []
 
-logging.error(
-    f"[GCP_STORAGE] GS_CREDENTIALS: {GS_CREDENTIALS}, GS_BUCKET_NAME: {GS_BUCKET_NAME}, DEFAULT_FILE_STORAGE: {DEFAULT_FILE_STORAGE}"
-)
-try:
+# Solo mostrar logs de GCP en modo no-testing
+if not TESTING:
     logging.error(
-        f"[GCP_STORAGE] Credenciales existen en /tmp: {os.path.exists('/tmp/gcp_storage_credentials.json')}"
+        f"[GCP_STORAGE] GS_CREDENTIALS: {GS_CREDENTIALS}, GS_BUCKET_NAME: {GS_BUCKET_NAME}, DEFAULT_FILE_STORAGE: {DEFAULT_FILE_STORAGE}"
     )
-except Exception as e:
-    logging.error(
-        f"[GCP_STORAGE] Error verificando /tmp/gcp_storage_credentials.json: {e}"
-    )
+    try:
+        logging.error(
+            f"[GCP_STORAGE] Credenciales existen en /tmp: {os.path.exists('/tmp/gcp_storage_credentials.json')}"
+        )
+    except Exception as e:
+        logging.error(
+            f"[GCP_STORAGE] Error verificando /tmp/gcp_storage_credentials.json: {e}"
+        )
+
+
+# =============================================================================
+# TESTING
+# =============================================================================
+
+# Test runner personalizado con salida limpia y sin warnings
+TEST_RUNNER = "hades_app.test_runner.HadesTestRunner"

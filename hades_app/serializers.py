@@ -175,6 +175,9 @@ class UsersSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             "password": {"write_only": True, "required": False},  # Opcional
             "email": {"required": False},  # Email también opcional
+            # Excluir campos many-to-many heredados de PermissionsMixin
+            "groups": {"read_only": True},
+            "user_permissions": {"read_only": True},
         }
 
     def get_eds_info(self, obj):
