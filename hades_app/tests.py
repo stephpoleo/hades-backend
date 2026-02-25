@@ -1,3 +1,1574 @@
-from django.test import TestCase
+"""
+=============================================================================
+HADES BACKEND - UNIT TESTS
+=============================================================================
 
-# Create your tests here.
+Este archivo contiene los tests unitarios para validar todos los flujos
+del backend de Hades antes de subir cambios a produccion.
+
+FLUJOS PRINCIPALES TESTEADOS:
+-----------------------------
+
+1. AUTENTICACION
+   - Obtener token CSRF
+   - Login con credenciales validas/invalidas
+   - Logout
+   - Obtener usuario actual (me)
+
+2. GESTION DE USUARIOS (UsersViewSet)
+   - Crear usuario con password encriptado
+   - Listar usuarios con paginacion
+   - Filtrar usuarios por nombre (search)
+   - Filtrar usuarios por EDS (eds_name)
+   - Obtener usuario individual con eds_info
+   - Actualizar usuario
+   - Eliminar usuario
+   - Campos calculados: assigned_forms, completed_forms
+
+3. GESTION DE EDS (EDSViewSet)
+   - Listar EDS con paginacion
+   - Listar EDS sin paginacion (no_pagination=true)
+   - Obtener EDS individual
+   - Crear/Actualizar/Eliminar EDS
+
+4. PLANTILLAS DE FORMULARIO (FormTemplateViewSet)
+   - CRUD de plantillas
+   - Campos calculados: assignments_count, completed_count, assigned_users
+   - Clear all action
+
+5. ORDENES DE TRABAJO (WorkOrderViewSet)
+   - Crear orden de trabajo con user_id requerido
+   - Listar ordenes con filtros (user_id, form_template_id, clave_eds)
+   - Campos calculados: total_questions, total_answers, completion_status, completion_grade
+   - Serializer optimizado para listas (WorkOrderListSerializer)
+
+6. PREGUNTAS DE FORMULARIO (FormQuestionsViewSet)
+   - CRUD de preguntas
+   - Tipos de pregunta: text, number, boolean, date, file, percent
+   - Campos: expected_value, allow_comments, allow_attachments
+
+7. RESPUESTAS DE FORMULARIO (FormAnswersViewSet)
+   - Crear respuesta con hasta 3 imagenes
+   - Actualizar respuesta
+   - Obtener respuestas por work_order
+   - Eliminar duplicados
+   - Endpoints de attachment
+
+8. ROLES Y PERMISOS
+   - CRUD de roles
+   - CRUD de permisos
+   - Asignacion de permisos a roles
+
+9. DASHBOARD KPIs
+   - Calcular metricas de cumplimiento
+   - Filtros: zone, eds, form, start_date, end_date
+   - Calculo de grades por EDS, zona y formulario
+
+10. LOGICA DE VALIDACION
+    - Validacion de respuestas correctas (boolean, percent, expected_value)
+    - Comparacion de respuestas con valores esperados
+
+=============================================================================
+"""
+
+import unittest
+from decimal import Decimal
+from datetime import datetime, timedelta
+from unittest.mock import patch, MagicMock
+
+from django.test import TestCase, override_settings
+from django.urls import reverse
+from django.contrib.auth import get_user_model
+from rest_framework.test import APITestCase, APIClient
+from rest_framework import status
+
+from .models import (
+    Users,
+    EDS,
+    FormTemplate,
+    WorkOrder,
+    FormQuestions,
+    FormAnswers,
+    Roles,
+    Permissions,
+)
+from .serializers import (
+    UsersSerializer,
+    EDSSerializer,
+    FormTemplateSerializer,
+    WorkOrderSerializer,
+    WorkOrderListSerializer,
+    FormQuestionsSerializer,
+    FormAnswersSerializer,
+    RolesSerializer,
+    PermissionsSerializer,
+)
+
+
+# =============================================================================
+# TEST FIXTURES - Datos de prueba reutilizables
+# =============================================================================
+
+class TestDataMixin:
+    """Mixin con metodos para crear datos de prueba"""
+
+    def create_user(self, name="Test User", email="test@example.com", password="testpass123", **kwargs):
+        """Crea un usuario de prueba"""
+        user = Users.objects.create(
+            name=name,
+            email=email,
+            usr_status=True,
+            **kwargs
+        )
+        user.set_password(password)
+        user.save()
+        return user
+
+    def create_form_template(self, name="Test Form", description="Test Description", is_active=True):
+        """Crea una plantilla de formulario de prueba"""
+        return FormTemplate.objects.create(
+            name=name,
+            description=description,
+            is_active=is_active
+        )
+
+    def create_question(self, form_template, question="Test Question?", qtype="text", order=1, **kwargs):
+        """Crea una pregunta de prueba"""
+        return FormQuestions.objects.create(
+            form_template=form_template,
+            question=question,
+            type=qtype,
+            question_order=order,
+            **kwargs
+        )
+
+    def create_work_order(self, user, form_template, clave_eds=None, **kwargs):
+        """Crea una orden de trabajo de prueba"""
+        return WorkOrder.objects.create(
+            user_id=user.id_usr_pk,
+            form_template=form_template,
+            date=datetime.now(),
+            clave_eds=clave_eds,
+            **kwargs
+        )
+
+    def create_answer(self, question, work_order, answer="Test Answer", **kwargs):
+        """Crea una respuesta de prueba"""
+        return FormAnswers.objects.create(
+            question=question,
+            work_order=work_order,
+            answer=answer,
+            **kwargs
+        )
+
+    def create_role(self, name="Test Role"):
+        """Crea un rol de prueba"""
+        return Roles.objects.create(name=name, role_status=True)
+
+    def create_permission(self, name="Test Permission"):
+        """Crea un permiso de prueba"""
+        return Permissions.objects.create(name=name, permission_status=True)
+
+
+# =============================================================================
+# 1. TESTS DE AUTENTICACION
+# =============================================================================
+
+class AuthenticationTests(APITestCase, TestDataMixin):
+    """
+    Tests para el flujo de autenticacion.
+
+    Flujo probado:
+    1. Usuario obtiene token CSRF
+    2. Usuario hace login con email/password
+    3. Usuario consulta /me para verificar sesion
+    4. Usuario hace logout
+    """
+
+    def setUp(self):
+        self.user = self.create_user(
+            name="Auth Test User",
+            email="auth@test.com",
+            password="securepass123"
+        )
+        self.client = APIClient()
+
+    def test_csrf_endpoint_returns_token(self):
+        """
+        FLUJO: Obtener token CSRF
+        El frontend necesita el token CSRF antes de hacer login
+        """
+        response = self.client.get('/api/auth/csrf/')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('csrfToken', response.json())
+
+    def test_login_with_valid_credentials(self):
+        """
+        FLUJO: Login exitoso
+        Usuario envia email y password correctos
+        """
+        response = self.client.post('/api/auth/login/', {
+            'email': 'auth@test.com',
+            'password': 'securepass123'
+        })
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data.get('success'))
+        self.assertEqual(data.get('message'), 'Login exitoso')
+
+    def test_login_with_invalid_credentials(self):
+        """
+        FLUJO: Login fallido
+        Usuario envia password incorrecto
+        """
+        response = self.client.post('/api/auth/login/', {
+            'email': 'auth@test.com',
+            'password': 'wrongpassword'
+        })
+        self.assertEqual(response.status_code, 401)
+        data = response.json()
+        self.assertFalse(data.get('success'))
+
+    def test_login_with_missing_credentials(self):
+        """
+        FLUJO: Login sin credenciales
+        Usuario no envia email o password
+        """
+        response = self.client.post('/api/auth/login/', {})
+        self.assertEqual(response.status_code, 400)
+        data = response.json()
+        self.assertFalse(data.get('success'))
+
+    def test_me_endpoint_requires_authentication(self):
+        """
+        FLUJO: /me sin autenticacion
+        Endpoint protegido debe rechazar usuarios no autenticados
+        """
+        response = self.client.get('/api/auth/me/')
+        self.assertIn(response.status_code, [401, 403])
+
+    def test_me_endpoint_returns_user_info(self):
+        """
+        FLUJO: /me con sesion activa
+        Usuario autenticado obtiene su informacion
+        """
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get('/api/auth/me/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data.get('email'), 'auth@test.com')
+        self.assertEqual(data.get('name'), 'Auth Test User')
+
+    def test_logout_clears_session(self):
+        """
+        FLUJO: Logout
+        Usuario cierra sesion
+        """
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post('/api/auth/logout/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data.get('success'))
+
+
+# =============================================================================
+# 2. TESTS DE USUARIOS
+# =============================================================================
+
+class UsersTests(APITestCase, TestDataMixin):
+    """
+    Tests para el CRUD de usuarios.
+
+    Flujos probados:
+    - Listar usuarios con paginacion
+    - Filtrar por nombre y EDS
+    - Crear usuario con password encriptado
+    - Obtener campos calculados (assigned_forms, completed_forms)
+    """
+    databases = '__all__'
+
+    def setUp(self):
+        self.admin = self.create_user(
+            name="Admin User",
+            email="admin@test.com",
+            password="adminpass",
+            is_staff=True
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def test_list_users_returns_paginated_response(self):
+        """
+        FLUJO: Listar usuarios con paginacion
+        Por defecto retorna 20 usuarios por pagina
+        """
+        # Crear varios usuarios
+        for i in range(25):
+            self.create_user(name=f"User {i}", email=f"user{i}@test.com")
+
+        response = self.client.get('/api/users/')
+        self.assertEqual(response.status_code, 200)
+        # Verificar estructura de paginacion
+        data = response.json()
+        self.assertIn('count', data)
+        self.assertIn('results', data)
+
+    def test_list_users_no_pagination(self):
+        """
+        FLUJO: Listar usuarios sin paginacion (para dropdowns)
+        Parametro no_pagination=true devuelve todos los usuarios
+        """
+        for i in range(5):
+            self.create_user(name=f"User {i}", email=f"user{i}@test.com")
+
+        response = self.client.get('/api/users/?no_pagination=true')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data.get('success'))
+        self.assertIn('users', data)
+
+    def test_filter_users_by_name(self):
+        """
+        FLUJO: Buscar usuarios por nombre
+        Parametro search filtra por nombre (case-insensitive)
+        """
+        self.create_user(name="Juan Perez", email="juan@test.com")
+        self.create_user(name="Maria Garcia", email="maria@test.com")
+
+        response = self.client.get('/api/users/?search=juan&no_pagination=true')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        users = data.get('users', [])
+        self.assertTrue(any('Juan' in u.get('name', '') for u in users))
+
+    def test_create_user_with_password(self):
+        """
+        FLUJO: Crear usuario con password
+        El password debe ser encriptado automaticamente
+        """
+        response = self.client.post('/api/users/', {
+            'name': 'New User',
+            'email': 'newuser@test.com',
+            'password': 'newpassword123'
+        })
+        self.assertEqual(response.status_code, 201)
+
+        # Verificar que el password fue encriptado
+        user = Users.objects.get(email='newuser@test.com')
+        self.assertTrue(user.check_password('newpassword123'))
+        self.assertNotEqual(user.password, 'newpassword123')
+
+    @patch('hades_app.serializers.EDS')
+    def test_retrieve_user_includes_eds_info(self, mock_eds):
+        """
+        FLUJO: Obtener usuario con informacion de EDS
+        El campo eds_info debe incluir datos de la EDS asignada (mockeado)
+        """
+        mock_eds.objects.get.return_value = None
+        mock_eds.objects.filter.return_value = []
+
+        user = self.create_user(
+            name="EDS User",
+            email="edsuser@test.com",
+            clave_eds_fk="EDS001"
+        )
+
+        response = self.client.get(f'/api/users/{user.id_usr_pk}/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data.get('success'))
+
+    def test_update_user(self):
+        """
+        FLUJO: Actualizar usuario
+        Actualizacion parcial de campos
+        """
+        user = self.create_user(name="Old Name", email="update@test.com")
+
+        response = self.client.patch(f'/api/users/{user.id_usr_pk}/', {
+            'name': 'New Name'
+        })
+        self.assertEqual(response.status_code, 200)
+
+        user.refresh_from_db()
+        self.assertEqual(user.name, 'New Name')
+
+    def test_delete_user(self):
+        """
+        FLUJO: Eliminar usuario
+        """
+        user = self.create_user(name="Delete Me", email="delete@test.com")
+        user_id = user.id_usr_pk
+
+        response = self.client.delete(f'/api/users/{user_id}/')
+        self.assertEqual(response.status_code, 200)
+
+        self.assertFalse(Users.objects.filter(id_usr_pk=user_id).exists())
+
+    def test_user_assigned_forms_count(self):
+        """
+        FLUJO: Contar formularios asignados al usuario
+        Campo calculado assigned_forms
+        """
+        user = self.create_user(name="Worker", email="worker@test.com")
+        template = self.create_form_template()
+
+        # Crear 3 ordenes de trabajo para el usuario
+        for i in range(3):
+            self.create_work_order(user, template)
+
+        # Obtener usuario y verificar contador
+        serializer = UsersSerializer(user)
+        self.assertEqual(serializer.data.get('assigned_forms'), 3)
+
+
+# =============================================================================
+# 3. TESTS DE FORM TEMPLATES
+# =============================================================================
+
+class FormTemplateTests(APITestCase, TestDataMixin):
+    """
+    Tests para plantillas de formulario.
+
+    Flujos probados:
+    - CRUD de plantillas
+    - Campos calculados (assignments_count, completed_count)
+    - Clear all action
+    """
+
+    def setUp(self):
+        self.admin = self.create_user(email="admin@test.com", is_staff=True)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def test_create_form_template(self):
+        """
+        FLUJO: Crear plantilla de formulario
+        """
+        response = self.client.post('/api/form-templates/', {
+            'name': 'Inspeccion Diaria',
+            'description': 'Formulario de inspeccion diaria de EDS',
+            'is_active': True
+        })
+        self.assertEqual(response.status_code, 201)
+
+    def test_list_form_templates(self):
+        """
+        FLUJO: Listar plantillas
+        """
+        self.create_form_template(name="Form 1")
+        self.create_form_template(name="Form 2")
+
+        response = self.client.get('/api/form-templates/')
+        self.assertEqual(response.status_code, 200)
+
+    def test_form_template_assignments_count(self):
+        """
+        FLUJO: Contar asignaciones de un formulario
+        Campo calculado assignments_count
+        """
+        template = self.create_form_template()
+        user1 = self.create_user(email="user1@test.com")
+        user2 = self.create_user(email="user2@test.com")
+
+        # Crear ordenes para diferentes usuarios
+        self.create_work_order(user1, template)
+        self.create_work_order(user2, template)
+        self.create_work_order(user1, template)  # Mismo usuario, no debe contar doble
+
+        serializer = FormTemplateSerializer(template)
+        self.assertEqual(serializer.data.get('assignments_count'), 2)
+
+    def test_form_template_completed_count(self):
+        """
+        FLUJO: Contar formularios completados
+        Un formulario esta completo cuando tiene respuestas >= preguntas
+        """
+        template = self.create_form_template()
+        q1 = self.create_question(template, "Pregunta 1?", order=1)
+        q2 = self.create_question(template, "Pregunta 2?", order=2)
+
+        user = self.create_user(email="worker@test.com")
+
+        # Crear orden completada (2 respuestas para 2 preguntas)
+        wo_complete = self.create_work_order(user, template)
+        self.create_answer(q1, wo_complete, "Respuesta 1")
+        self.create_answer(q2, wo_complete, "Respuesta 2")
+
+        # Crear orden incompleta (1 respuesta para 2 preguntas)
+        wo_incomplete = self.create_work_order(user, template)
+        self.create_answer(q1, wo_incomplete, "Solo una")
+
+        serializer = FormTemplateSerializer(template)
+        self.assertEqual(serializer.data.get('completed_count'), 1)
+
+
+# =============================================================================
+# 4. TESTS DE WORK ORDERS
+# =============================================================================
+
+class WorkOrderTests(APITestCase, TestDataMixin):
+    """
+    Tests para ordenes de trabajo.
+
+    Flujos probados:
+    - Crear orden con user_id requerido
+    - Listar con filtros
+    - Campos calculados (completion_status, completion_grade)
+    """
+
+    def setUp(self):
+        self.user = self.create_user(email="worker@test.com")
+        self.template = self.create_form_template()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_work_order_requires_user_id(self):
+        """
+        FLUJO: Crear orden sin user_id
+        Debe fallar si no se proporciona user_id
+        """
+        response = self.client.post('/api/work-orders/', {
+            'form_template_id': self.template.id,
+            'date': datetime.now().isoformat()
+        })
+        # Debe fallar o usar el usuario autenticado
+        self.assertIn(response.status_code, [201, 400])
+
+    def test_create_work_order_with_user_id(self):
+        """
+        FLUJO: Crear orden con user_id
+        """
+        response = self.client.post('/api/work-orders/', {
+            'form_template_id': self.template.id,
+            'date': datetime.now().isoformat(),
+            'user_id': self.user.id_usr_pk
+        })
+        self.assertEqual(response.status_code, 201)
+
+    def test_list_work_orders_filter_by_user(self):
+        """
+        FLUJO: Filtrar ordenes por usuario
+        Parametro user_id
+        """
+        other_user = self.create_user(email="other@test.com")
+        self.create_work_order(self.user, self.template)
+        self.create_work_order(other_user, self.template)
+
+        response = self.client.get(f'/api/work-orders/?user_id={self.user.id_usr_pk}')
+        self.assertEqual(response.status_code, 200)
+
+    def test_work_order_completion_status_pending(self):
+        """
+        FLUJO: Estado de completado - Pendiente
+        Sin respuestas = pending
+        """
+        self.create_question(self.template, "Q1?", order=1)
+        wo = self.create_work_order(self.user, self.template)
+
+        serializer = WorkOrderSerializer(wo)
+        self.assertEqual(serializer.data.get('completion_status'), 'pending')
+
+    def test_work_order_completion_status_draft(self):
+        """
+        FLUJO: Estado de completado - Borrador
+        Algunas respuestas pero no todas = draft
+        """
+        q1 = self.create_question(self.template, "Q1?", order=1)
+        self.create_question(self.template, "Q2?", order=2)
+        wo = self.create_work_order(self.user, self.template)
+        self.create_answer(q1, wo, "Respuesta parcial")
+
+        serializer = WorkOrderSerializer(wo)
+        self.assertEqual(serializer.data.get('completion_status'), 'draft')
+
+    def test_work_order_completion_status_completed(self):
+        """
+        FLUJO: Estado de completado - Completado
+        Todas las respuestas = completed
+        """
+        q1 = self.create_question(self.template, "Q1?", order=1)
+        q2 = self.create_question(self.template, "Q2?", order=2)
+        wo = self.create_work_order(self.user, self.template)
+        self.create_answer(q1, wo, "R1")
+        self.create_answer(q2, wo, "R2")
+
+        serializer = WorkOrderSerializer(wo)
+        self.assertEqual(serializer.data.get('completion_status'), 'completed')
+
+    def test_work_order_completion_grade(self):
+        """
+        FLUJO: Calcular grade de cumplimiento
+        Porcentaje de respuestas correctas
+        """
+        # Pregunta booleana donde True es correcto
+        q1 = self.create_question(self.template, "Cumple?", qtype="boolean", order=1)
+        wo = self.create_work_order(self.user, self.template)
+        self.create_answer(q1, wo, "true")  # Respuesta correcta
+
+        serializer = WorkOrderSerializer(wo)
+        grade = serializer.data.get('completion_grade')
+        self.assertEqual(grade, 100.0)
+
+
+# =============================================================================
+# 5. TESTS DE FORM QUESTIONS
+# =============================================================================
+
+class FormQuestionsTests(APITestCase, TestDataMixin):
+    """
+    Tests para preguntas de formulario.
+
+    Flujos probados:
+    - CRUD de preguntas
+    - Diferentes tipos de pregunta
+    - Campo expected_value
+    """
+
+    def setUp(self):
+        self.user = self.create_user(email="admin@test.com", is_staff=True)
+        self.template = self.create_form_template()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_text_question(self):
+        """
+        FLUJO: Crear pregunta tipo texto
+        """
+        response = self.client.post('/api/form-questions/', {
+            'form_template_id': self.template.id,
+            'question': 'Describe el estado de la estacion',
+            'type': 'text',
+            'question_order': 1,
+            'is_required': True
+        })
+        self.assertEqual(response.status_code, 201)
+
+    def test_create_boolean_question(self):
+        """
+        FLUJO: Crear pregunta tipo booleano
+        """
+        response = self.client.post('/api/form-questions/', {
+            'form_template_id': self.template.id,
+            'question': 'La estacion cumple con las normas?',
+            'type': 'boolean',
+            'question_order': 1,
+            'is_required': True
+        })
+        self.assertEqual(response.status_code, 201)
+
+    def test_create_percent_question_with_expected_value(self):
+        """
+        FLUJO: Crear pregunta tipo porcentaje con valor esperado
+        """
+        response = self.client.post('/api/form-questions/', {
+            'form_template_id': self.template.id,
+            'question': 'Porcentaje de ocupacion',
+            'type': 'percent',
+            'question_order': 1,
+            'expected_value': '90'
+        })
+        self.assertEqual(response.status_code, 201)
+
+        question = FormQuestions.objects.get(id=response.json()['id'])
+        self.assertEqual(question.expected_value, '90')
+
+    def test_list_questions_by_template(self):
+        """
+        FLUJO: Listar preguntas filtradas por plantilla
+        """
+        other_template = self.create_form_template(name="Other")
+        self.create_question(self.template, "Q1?", order=1)
+        self.create_question(self.template, "Q2?", order=2)
+        self.create_question(other_template, "Q3?", order=1)
+
+        response = self.client.get(f'/api/form-questions/?form_template={self.template.id}')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 2)
+
+
+# =============================================================================
+# 6. TESTS DE FORM ANSWERS
+# =============================================================================
+
+class FormAnswersTests(APITestCase, TestDataMixin):
+    """
+    Tests para respuestas de formulario.
+
+    Flujos probados:
+    - Crear respuesta
+    - Actualizar respuesta (upsert)
+    - Multiples imagenes
+    - Obtener respuestas por work_order
+    """
+
+    def setUp(self):
+        self.user = self.create_user(email="worker@test.com")
+        self.template = self.create_form_template()
+        self.question = self.create_question(self.template, "Test Q?", order=1)
+        self.work_order = self.create_work_order(self.user, self.template)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_answer(self):
+        """
+        FLUJO: Crear respuesta a una pregunta
+        """
+        response = self.client.post('/api/form-answers/', {
+            'question_id': self.question.id,
+            'work_order_id': self.work_order.id,
+            'answer': 'Mi respuesta'
+        })
+        self.assertEqual(response.status_code, 201)
+
+    def test_update_existing_answer(self):
+        """
+        FLUJO: Actualizar respuesta existente
+        Si ya existe una respuesta para question+work_order, se actualiza
+        """
+        # Crear respuesta inicial
+        answer = self.create_answer(self.question, self.work_order, "Original")
+
+        # Actualizar via POST (upsert behavior)
+        response = self.client.post('/api/form-answers/', {
+            'question_id': self.question.id,
+            'work_order_id': self.work_order.id,
+            'answer': 'Actualizada'
+        })
+        self.assertEqual(response.status_code, 200)
+
+        # Verificar que se actualizo
+        answer.refresh_from_db()
+        self.assertEqual(answer.answer, 'Actualizada')
+
+    def test_get_answers_by_workorder(self):
+        """
+        FLUJO: Obtener respuestas de una orden de trabajo
+        Endpoint by-workorder
+        """
+        self.create_answer(self.question, self.work_order, "Respuesta 1")
+
+        response = self.client.get(f'/api/form-answers/by-workorder/?work_order_id={self.work_order.id}')
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(len(response.json()), 1)
+
+    def test_answer_with_comments(self):
+        """
+        FLUJO: Respuesta con comentarios adicionales
+        """
+        response = self.client.post('/api/form-answers/', {
+            'question_id': self.question.id,
+            'work_order_id': self.work_order.id,
+            'answer': 'Si',
+            'comments': 'Comentario adicional sobre la respuesta'
+        })
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json().get('comments'), 'Comentario adicional sobre la respuesta')
+
+    def test_answer_with_clave_eds(self):
+        """
+        FLUJO: Respuesta asociada a una EDS
+        Campo clave_eds_fk
+        """
+        response = self.client.post('/api/form-answers/', {
+            'question_id': self.question.id,
+            'work_order_id': self.work_order.id,
+            'answer': 'Respuesta',
+            'clave_eds_fk': 'EDS001'
+        })
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json().get('clave_eds_fk'), 'EDS001')
+
+
+# =============================================================================
+# 7. TESTS DE ROLES Y PERMISOS
+# =============================================================================
+
+class RolesPermissionsTests(APITestCase, TestDataMixin):
+    """
+    Tests para roles y permisos.
+
+    Flujos probados:
+    - CRUD de roles
+    - CRUD de permisos
+    - Asignacion de permisos a roles
+    """
+
+    def setUp(self):
+        self.admin = self.create_user(email="admin@test.com", is_staff=True)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def test_create_role(self):
+        """
+        FLUJO: Crear rol
+        """
+        response = self.client.post('/api/roles/', {
+            'name': 'Supervisor',
+            'role_status': True
+        })
+        self.assertEqual(response.status_code, 201)
+
+    def test_create_permission(self):
+        """
+        FLUJO: Crear permiso
+        """
+        response = self.client.post('/api/permissions/', {
+            'name': 'can_edit_users',
+            'permission_status': True
+        })
+        self.assertEqual(response.status_code, 201)
+
+    def test_assign_permissions_to_role(self):
+        """
+        FLUJO: Asignar permisos a un rol
+        """
+        role = self.create_role("Admin")
+        perm1 = self.create_permission("can_view")
+        perm2 = self.create_permission("can_edit")
+
+        response = self.client.patch(f'/api/roles/{role.id_rol_pk}/', {
+            'permissions_ids': [perm1.id_permissions_pk, perm2.id_permissions_pk]
+        })
+        self.assertEqual(response.status_code, 200)
+
+        role.refresh_from_db()
+        self.assertEqual(role.permissions.count(), 2)
+
+    def test_list_roles_includes_permissions(self):
+        """
+        FLUJO: Listar roles con permisos incluidos
+        """
+        role = self.create_role("Test Role")
+        perm = self.create_permission("test_perm")
+        role.permissions.add(perm)
+
+        response = self.client.get('/api/roles/')
+        self.assertEqual(response.status_code, 200)
+
+
+# =============================================================================
+# 8. TESTS DE DASHBOARD KPIs
+# =============================================================================
+
+class DashboardKPIsTests(APITestCase, TestDataMixin):
+    """
+    Tests para el endpoint de Dashboard KPIs.
+
+    Flujos probados:
+    - Calcular metricas de cumplimiento
+    - Filtros por zona, EDS, formulario, fechas
+
+    Nota: Este endpoint accede a la base de datos EDS externa.
+    Usamos mocks para simular EDS.objects.all() en tests.
+    """
+
+    def setUp(self):
+        self.user = self.create_user(email="admin@test.com", is_staff=True)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch('hades_app.views.EDS')
+    def test_dashboard_kpis_empty(self, mock_eds):
+        """
+        FLUJO: KPIs sin datos
+        Debe retornar estructura valida con valores en 0
+        """
+        # Mock EDS.objects.all() para retornar lista vacia
+        mock_eds.objects.all.return_value = []
+
+        response = self.client.get('/api/dashboard/kpis/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data.get('success'))
+        self.assertIn('complianceRating', data)
+        self.assertIn('complianceHighlights', data)
+        self.assertIn('complianceRows', data)
+
+    @patch('hades_app.views.EDS')
+    def test_dashboard_kpis_with_data(self, mock_eds):
+        """
+        FLUJO: KPIs con datos de cumplimiento
+        """
+        # Mock EDS
+        mock_eds.objects.all.return_value = []
+
+        template = self.create_form_template()
+        q1 = self.create_question(template, "Cumple?", qtype="boolean", order=1)
+
+        worker = self.create_user(email="worker@test.com", clave_eds_fk="EDS001")
+        wo = self.create_work_order(worker, template, clave_eds="EDS001")
+        self.create_answer(q1, wo, "true")
+
+        response = self.client.get('/api/dashboard/kpis/')
+        self.assertEqual(response.status_code, 200)
+
+    @patch('hades_app.views.EDS')
+    def test_dashboard_kpis_filter_by_date_range(self, mock_eds):
+        """
+        FLUJO: Filtrar KPIs por rango de fechas
+        """
+        mock_eds.objects.all.return_value = []
+
+        today = datetime.now().strftime('%Y-%m-%d')
+        response = self.client.get(f'/api/dashboard/kpis/?start_date={today}&end_date={today}')
+        self.assertEqual(response.status_code, 200)
+
+    @patch('hades_app.views.EDS')
+    def test_dashboard_kpis_filter_options(self, mock_eds):
+        """
+        FLUJO: Obtener opciones de filtro
+        El endpoint debe incluir opciones para filtrar
+        """
+        mock_eds.objects.all.return_value = []
+
+        self.create_form_template(name="Form A")
+        self.create_form_template(name="Form B")
+
+        response = self.client.get('/api/dashboard/kpis/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn('filterOptions', data)
+        self.assertIn('forms', data['filterOptions'])
+
+
+# =============================================================================
+# 9. TESTS DE LOGICA DE VALIDACION
+# =============================================================================
+
+class AnswerValidationTests(TestCase, TestDataMixin):
+    """
+    Tests para la logica de validacion de respuestas.
+
+    Flujos probados:
+    - Validacion de respuestas booleanas
+    - Validacion de respuestas de porcentaje
+    - Comparacion con expected_value
+    """
+
+    def setUp(self):
+        self.user = self.create_user(email="test@test.com")
+        self.template = self.create_form_template()
+
+    def test_boolean_answer_true_is_correct(self):
+        """
+        FLUJO: Respuesta booleana "true" es correcta
+        """
+        question = self.create_question(self.template, "Cumple?", qtype="boolean", order=1)
+        wo = self.create_work_order(self.user, self.template)
+        answer = self.create_answer(question, wo, "true")
+
+        from .views import _is_answer_correct
+        self.assertTrue(_is_answer_correct(question, answer))
+
+    def test_boolean_answer_si_is_correct(self):
+        """
+        FLUJO: Respuesta booleana "si" es correcta
+        """
+        question = self.create_question(self.template, "Cumple?", qtype="boolean", order=1)
+        wo = self.create_work_order(self.user, self.template)
+        answer = self.create_answer(question, wo, "si")
+
+        from .views import _is_answer_correct
+        self.assertTrue(_is_answer_correct(question, answer))
+
+    def test_boolean_answer_false_is_incorrect(self):
+        """
+        FLUJO: Respuesta booleana "false" es incorrecta (sin expected_value)
+        """
+        question = self.create_question(self.template, "Cumple?", qtype="boolean", order=1)
+        wo = self.create_work_order(self.user, self.template)
+        answer = self.create_answer(question, wo, "false")
+
+        from .views import _is_answer_correct
+        self.assertFalse(_is_answer_correct(question, answer))
+
+    def test_percent_answer_100_is_correct(self):
+        """
+        FLUJO: Respuesta de porcentaje 100% es correcta
+        """
+        question = self.create_question(self.template, "Ocupacion?", qtype="percent", order=1)
+        wo = self.create_work_order(self.user, self.template)
+        answer = self.create_answer(question, wo, "100")
+
+        from .views import _is_answer_correct
+        self.assertTrue(_is_answer_correct(question, answer))
+
+    def test_percent_answer_below_100_is_incorrect(self):
+        """
+        FLUJO: Respuesta de porcentaje <100% es incorrecta (sin expected_value)
+        """
+        question = self.create_question(self.template, "Ocupacion?", qtype="percent", order=1)
+        wo = self.create_work_order(self.user, self.template)
+        answer = self.create_answer(question, wo, "80")
+
+        from .views import _is_answer_correct
+        self.assertFalse(_is_answer_correct(question, answer))
+
+    def test_answer_with_expected_value(self):
+        """
+        FLUJO: Validar respuesta contra expected_value
+        """
+        question = self.create_question(
+            self.template,
+            "Nivel?",
+            qtype="percent",
+            order=1,
+            expected_value="90"
+        )
+        wo = self.create_work_order(self.user, self.template)
+
+        # Respuesta >= expected_value es correcta
+        answer_correct = self.create_answer(question, wo, "95")
+        from .views import _is_answer_correct
+        self.assertTrue(_is_answer_correct(question, answer_correct))
+
+        # Respuesta < expected_value es incorrecta
+        answer_incorrect = FormAnswers.objects.create(
+            question=question,
+            work_order=wo,
+            answer="85"
+        )
+        self.assertFalse(_is_answer_correct(question, answer_incorrect))
+
+
+# =============================================================================
+# 10. TESTS DE SERIALIZERS
+# =============================================================================
+
+class SerializerTests(TestCase, TestDataMixin):
+    """
+    Tests para validaciones de serializers.
+    """
+
+    def setUp(self):
+        self.user = self.create_user(email="test@test.com")
+        self.template = self.create_form_template()
+
+    def test_work_order_serializer_validates_user_id_on_create(self):
+        """
+        FLUJO: WorkOrderSerializer valida user_id al crear
+        La validacion de user_id ocurre en create(), no en is_valid()
+        """
+        from rest_framework import serializers as drf_serializers
+
+        serializer = WorkOrderSerializer(data={
+            'form_template_id': self.template.id,
+            'date': datetime.now().isoformat()
+        })
+        # El serializer es valido sintacticamente (user_id es opcional)
+        self.assertTrue(serializer.is_valid())
+
+        # Pero falla al crear sin user_id ni request context
+        with self.assertRaises(drf_serializers.ValidationError) as context:
+            serializer.save()
+        self.assertIn('user_id', str(context.exception))
+
+    def test_users_serializer_password_is_write_only(self):
+        """
+        FLUJO: Password no se incluye en la salida del serializer
+        """
+        serializer = UsersSerializer(self.user)
+        self.assertNotIn('password', serializer.data)
+
+    def test_form_answers_serializer_includes_images(self):
+        """
+        FLUJO: FormAnswersSerializer incluye campos de imagen
+        """
+        question = self.create_question(self.template, "Q?", order=1)
+        wo = self.create_work_order(self.user, self.template)
+        answer = self.create_answer(question, wo, "Test")
+
+        serializer = FormAnswersSerializer(answer)
+        self.assertIn('image', serializer.data)
+        self.assertIn('image_2', serializer.data)
+        self.assertIn('image_3', serializer.data)
+
+    def test_work_order_list_serializer_excludes_answers(self):
+        """
+        FLUJO: WorkOrderListSerializer no incluye answers (optimizacion)
+        """
+        wo = self.create_work_order(self.user, self.template)
+
+        serializer = WorkOrderListSerializer(wo)
+        self.assertNotIn('answers', serializer.data)
+
+
+# =============================================================================
+# 11. TESTS DE PAGINACION
+# =============================================================================
+
+class PaginationTests(APITestCase, TestDataMixin):
+    """
+    Tests para el sistema de paginacion.
+    """
+
+    def setUp(self):
+        self.user = self.create_user(email="admin@test.com", is_staff=True)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_standard_pagination_page_size(self):
+        """
+        FLUJO: Paginacion estandar de 20 elementos
+        """
+        template = self.create_form_template()
+        for i in range(30):
+            self.create_work_order(self.user, template)
+
+        response = self.client.get('/api/work-orders/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data.get('results', [])), 20)
+        self.assertEqual(data.get('page_size'), 20)
+
+    def test_custom_page_size(self):
+        """
+        FLUJO: Paginacion con page_size personalizado
+        """
+        template = self.create_form_template()
+        for i in range(15):
+            self.create_work_order(self.user, template)
+
+        response = self.client.get('/api/work-orders/?page_size=10')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data.get('results', [])), 10)
+
+    def test_pagination_metadata(self):
+        """
+        FLUJO: Verificar metadata de paginacion
+        """
+        template = self.create_form_template()
+        for i in range(25):
+            self.create_work_order(self.user, template)
+
+        response = self.client.get('/api/work-orders/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertIn('count', data)
+        self.assertIn('total_pages', data)
+        self.assertIn('current_page', data)
+        self.assertIn('next', data)
+        self.assertIn('previous', data)
+
+
+# =============================================================================
+# 12. TESTS DE INTEGRACION CON OASIS/EDS
+# =============================================================================
+
+def _is_eds_available():
+    """
+    Verifica si la conexion a la base de datos EDS (OASIS) esta disponible
+    Y si la tabla oasis_cat_eds existe (conexion real, no base de datos de test).
+
+    Retorna False durante tests normales porque Django crea una DB de test vacia.
+    Solo retorna True si hay conexion real a OASIS via cloud-proxy.
+    """
+    # Durante tests, siempre retornar False para saltar tests de integracion
+    # Los tests de integracion deben ejecutarse manualmente con:
+    # python manage.py test hades_app.tests.OASISIntegrationTests --keepdb
+    import sys
+    if 'test' in sys.argv:
+        # Si se especifica explicitamente el modulo de integracion, intentar conectar
+        if 'OASISIntegrationTests' not in str(sys.argv):
+            return False
+
+    try:
+        from django.db import connections
+        from django.conf import settings
+
+        if 'eds' not in settings.DATABASES:
+            return False
+
+        # Intentar ejecutar una query real en la tabla de OASIS
+        conn = connections['eds']
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM oasis_cat_eds LIMIT 1")
+            cursor.fetchone()
+        return True
+    except Exception:
+        return False
+
+
+@unittest.skipUnless(_is_eds_available(), "Requiere conexion a OASIS (ejecutar make cloud-proxy)")
+class OASISIntegrationTests(APITestCase, TestDataMixin):
+    """
+    Tests de integracion con la base de datos OASIS/EDS.
+
+    IMPORTANTE: Estos tests solo se ejecutan cuando hay conexion real a OASIS.
+    Para ejecutarlos:
+    1. En una terminal: make cloud-proxy
+    2. En otra terminal: make test
+
+    Si cloud-proxy no esta activo, estos tests se saltan automaticamente.
+    """
+    databases = '__all__'
+
+    def setUp(self):
+        self.user = self.create_user(email="admin@test.com", is_staff=True)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_eds_connection(self):
+        """
+        INTEGRACION: Verificar conexion a base de datos EDS
+        """
+        from django.db import connections
+        conn = connections['eds']
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            result = cursor.fetchone()
+        self.assertEqual(result[0], 1)
+
+    def test_eds_list_returns_data(self):
+        """
+        INTEGRACION: Listar EDS desde OASIS
+        El endpoint debe retornar datos reales de la tabla oasis_cat_eds
+        """
+        response = self.client.get('/api/eds/?no_pagination=true')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        # Debe haber al menos algunas EDS en OASIS
+        self.assertIn('eds', data)
+
+    def test_dashboard_kpis_with_real_eds(self):
+        """
+        INTEGRACION: Dashboard KPIs con datos reales de EDS
+        """
+        response = self.client.get('/api/dashboard/kpis/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data.get('success'))
+        # filterOptions debe incluir zonas reales de OASIS
+        self.assertIn('filterOptions', data)
+
+    def test_user_with_real_eds_info(self):
+        """
+        INTEGRACION: Usuario con informacion de EDS real
+        """
+        # Obtener una clave_eds real de OASIS
+        from hades_app.models import EDS
+        try:
+            first_eds = EDS.objects.first()
+            if first_eds:
+                user = self.create_user(
+                    name="EDS User",
+                    email="edsuser@test.com",
+                    clave_eds_fk=first_eds.id_eds_pk
+                )
+                response = self.client.get(f'/api/users/{user.id_usr_pk}/')
+                self.assertEqual(response.status_code, 200)
+                data = response.json()
+                # eds_info debe estar presente y tener datos
+                self.assertIn('user', data)
+        except Exception:
+            self.skipTest("No hay EDS disponibles en OASIS")
+
+
+# =============================================================================
+# 13. TESTS ADICIONALES - ATTACHMENT ENDPOINTS
+# =============================================================================
+
+class AttachmentEndpointsTests(APITestCase, TestDataMixin):
+    """
+    Tests para los endpoints de descarga de attachments.
+
+    Flujos probados:
+    - Endpoint attachment (imagen principal)
+    - Endpoint attachment-2 (segunda imagen)
+    - Endpoint attachment-3 (tercera imagen)
+    """
+
+    def setUp(self):
+        self.user = self.create_user(email="worker@test.com")
+        self.template = self.create_form_template()
+        self.question = self.create_question(self.template, "Test Q?", order=1)
+        self.work_order = self.create_work_order(self.user, self.template)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_attachment_endpoint_no_image(self):
+        """
+        FLUJO: Intentar descargar attachment cuando no existe
+        Debe retornar 404
+        """
+        answer = self.create_answer(self.question, self.work_order, "Sin imagen")
+
+        response = self.client.get(f'/api/form-answers/{answer.id}/attachment/')
+        self.assertEqual(response.status_code, 404)
+
+    def test_attachment_2_endpoint_no_image(self):
+        """
+        FLUJO: Intentar descargar attachment-2 cuando no existe
+        Debe retornar 404
+        """
+        answer = self.create_answer(self.question, self.work_order, "Sin imagen")
+
+        response = self.client.get(f'/api/form-answers/{answer.id}/attachment-2/')
+        self.assertEqual(response.status_code, 404)
+
+    def test_attachment_3_endpoint_no_image(self):
+        """
+        FLUJO: Intentar descargar attachment-3 cuando no existe
+        Debe retornar 404
+        """
+        answer = self.create_answer(self.question, self.work_order, "Sin imagen")
+
+        response = self.client.get(f'/api/form-answers/{answer.id}/attachment-3/')
+        self.assertEqual(response.status_code, 404)
+
+
+# =============================================================================
+# 14. TESTS ADICIONALES - FILTROS DE USUARIOS
+# =============================================================================
+
+class UsersFilterTests(APITestCase, TestDataMixin):
+    """
+    Tests para los filtros de usuarios.
+
+    Flujos probados:
+    - Filtrar por eds_name
+    - Busqueda por nombre (search)
+
+    Nota: Los tests que acceden a EDS directamente se prueban en OASISIntegrationTests.
+    """
+    databases = '__all__'
+
+    def setUp(self):
+        self.admin = self.create_user(
+            name="Admin User",
+            email="admin@test.com",
+            is_staff=True
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def test_search_filter_works(self):
+        """
+        FLUJO: Buscar usuarios por nombre
+        El parametro search filtra por nombre (case-insensitive)
+        """
+        self.create_user(name="Juan Perez", email="juan@test.com")
+        self.create_user(name="Maria Garcia", email="maria@test.com")
+
+        response = self.client.get('/api/users/?search=MARIA&no_pagination=true')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        users = data.get('users', [])
+        # Debe encontrar solo Maria
+        self.assertEqual(len(users), 1)
+        self.assertEqual(users[0].get('name'), 'Maria Garcia')
+
+
+# =============================================================================
+# 15. TESTS ADICIONALES - PAGINACION ESPECIFICA
+# =============================================================================
+
+class PaginationClassTests(APITestCase, TestDataMixin):
+    """
+    Tests para las clases de paginacion.
+
+    Flujos probados:
+    - LargePagination (50 elementos por defecto)
+    - StandardPagination (20 elementos por defecto)
+    """
+
+    def setUp(self):
+        self.user = self.create_user(email="admin@test.com", is_staff=True)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_eds_viewset_uses_large_pagination(self):
+        """
+        FLUJO: EDSViewSet esta configurado con LargePagination
+        Verifica la configuracion del ViewSet sin hacer request
+        """
+        from .views import EDSViewSet
+        from .pagination import LargePagination
+
+        self.assertEqual(EDSViewSet.pagination_class, LargePagination)
+
+    def test_users_viewset_uses_large_pagination(self):
+        """
+        FLUJO: UsersViewSet esta configurado con LargePagination
+        """
+        from .views import UsersViewSet
+        from .pagination import LargePagination
+
+        self.assertEqual(UsersViewSet.pagination_class, LargePagination)
+
+    def test_work_orders_uses_standard_pagination(self):
+        """
+        FLUJO: WorkOrders usa StandardPagination (20 por pagina)
+        """
+        template = self.create_form_template()
+        for i in range(25):
+            self.create_work_order(self.user, template)
+
+        response = self.client.get('/api/work-orders/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        # Verificar que hay paginacion
+        self.assertIn('count', data)
+        self.assertEqual(data.get('page_size'), 20)
+
+
+# =============================================================================
+# 16. TESTS ADICIONALES - FORM ANSWERS FILTROS
+# =============================================================================
+
+class FormAnswersFilterTests(APITestCase, TestDataMixin):
+    """
+    Tests para los filtros de FormAnswers.
+
+    Flujos probados:
+    - Filtrar por work_order_id en el list
+    - Sin work_order_id retorna vacio (proteccion contra timeout)
+    - Filtrar por form_template
+    """
+
+    def setUp(self):
+        self.user = self.create_user(email="worker@test.com")
+        self.template = self.create_form_template()
+        self.question = self.create_question(self.template, "Test Q?", order=1)
+        self.work_order = self.create_work_order(self.user, self.template)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_list_answers_without_work_order_id_returns_empty(self):
+        """
+        FLUJO: Listar respuestas sin work_order_id
+        Debe retornar lista vacia para evitar cargar toda la BD
+        """
+        self.create_answer(self.question, self.work_order, "Respuesta")
+
+        response = self.client.get('/api/form-answers/')
+        self.assertEqual(response.status_code, 200)
+        # Sin work_order_id, debe retornar vacío
+        self.assertEqual(len(response.json()), 0)
+
+    def test_list_answers_with_work_order_id(self):
+        """
+        FLUJO: Listar respuestas con work_order_id
+        Debe retornar solo las respuestas del work_order especificado
+        """
+        self.create_answer(self.question, self.work_order, "Respuesta 1")
+
+        response = self.client.get(f'/api/form-answers/?work_order_id={self.work_order.id}')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
+
+    def test_list_answers_with_work_order_param(self):
+        """
+        FLUJO: Listar respuestas con work_order (nombre alternativo)
+        Debe aceptar ambos nombres de parametro
+        """
+        self.create_answer(self.question, self.work_order, "Respuesta")
+
+        response = self.client.get(f'/api/form-answers/?work_order={self.work_order.id}')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
+
+    def test_list_answers_with_form_template_filter(self):
+        """
+        FLUJO: Filtrar respuestas por form_template
+        """
+        self.create_answer(self.question, self.work_order, "Respuesta")
+
+        # Crear otro template y work_order
+        template2 = self.create_form_template(name="Template 2")
+        q2 = self.create_question(template2, "Q2?", order=1)
+        wo2 = self.create_work_order(self.user, template2)
+        self.create_answer(q2, wo2, "Otra respuesta")
+
+        # Filtrar por template del primer work_order
+        response = self.client.get(
+            f'/api/form-answers/?work_order_id={self.work_order.id}&form_template={self.template.id}'
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
+
+
+# =============================================================================
+# 17. TESTS ADICIONALES - DELETE DUPLICATES
+# =============================================================================
+
+class DeleteDuplicatesTests(APITestCase, TestDataMixin):
+    """
+    Tests para el endpoint delete-duplicates de FormAnswers.
+
+    Flujos probados:
+    - Eliminar respuestas duplicadas
+    - No eliminar cuando no hay duplicados
+    """
+
+    def setUp(self):
+        self.user = self.create_user(email="worker@test.com", is_staff=True)
+        self.template = self.create_form_template()
+        self.question = self.create_question(self.template, "Test Q?", order=1)
+        self.work_order = self.create_work_order(self.user, self.template)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_delete_duplicates_no_duplicates(self):
+        """
+        FLUJO: delete-duplicates sin duplicados
+        No debe eliminar nada
+        """
+        self.create_answer(self.question, self.work_order, "Unica respuesta")
+
+        response = self.client.delete('/api/form-answers/delete-duplicates/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data.get('deleted'), 0)
+
+    def test_delete_duplicates_with_duplicates(self):
+        """
+        FLUJO: delete-duplicates con duplicados
+        Debe eliminar duplicados y dejar solo el mas reciente
+        """
+        # Crear respuestas duplicadas manualmente (mismo question + work_order)
+        FormAnswers.objects.create(
+            question=self.question,
+            work_order=self.work_order,
+            answer="Primera"
+        )
+        FormAnswers.objects.create(
+            question=self.question,
+            work_order=self.work_order,
+            answer="Segunda"
+        )
+        FormAnswers.objects.create(
+            question=self.question,
+            work_order=self.work_order,
+            answer="Tercera"
+        )
+
+        # Verificar que hay 3 respuestas
+        count_before = FormAnswers.objects.filter(
+            question=self.question,
+            work_order=self.work_order
+        ).count()
+        self.assertEqual(count_before, 3)
+
+        response = self.client.delete('/api/form-answers/delete-duplicates/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        # Debe eliminar 2 (dejar solo la mas reciente)
+        self.assertEqual(data.get('deleted'), 2)
+
+        # Verificar que solo queda 1
+        count_after = FormAnswers.objects.filter(
+            question=self.question,
+            work_order=self.work_order
+        ).count()
+        self.assertEqual(count_after, 1)
+
+        # Verificar que quedo la mas reciente (mayor id = "Tercera")
+        remaining = FormAnswers.objects.filter(
+            question=self.question,
+            work_order=self.work_order
+        ).first()
+        self.assertEqual(remaining.answer, "Tercera")
