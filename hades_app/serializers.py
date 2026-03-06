@@ -391,6 +391,7 @@ class WorkOrderSerializer(serializers.ModelSerializer):
             "form_template",
             "form_template_id",
             "eds",
+            "clave_eds",
             "user",
             "total_questions",
             "total_answers",
@@ -591,12 +592,18 @@ class WorkOrderSerializer(serializers.ModelSerializer):
             return None
 
     def get_eds(self, obj):
-        """Obtener informacion completa de la EDS por clave_eds"""
+        """Obtener informacion completa de la EDS por clave_eds o del usuario asignado"""
         try:
             clave_eds = obj.clave_eds
 
-            # Solo usar clave_eds del WorkOrder directamente
-            # Evitar queries adicionales a FormAnswers para prevenir N+1 y timeouts
+            # Fallback: si no hay clave_eds en el WorkOrder, usar la del usuario
+            if not clave_eds and obj.user_id:
+                try:
+                    user = Users.objects.get(id_usr_pk=obj.user_id)
+                    clave_eds = user.clave_eds_fk
+                except Users.DoesNotExist:
+                    pass
+
             if clave_eds:
                 try:
                     eds = EDS.objects.get(id_eds_pk=clave_eds)
@@ -610,10 +617,23 @@ class WorkOrderSerializer(serializers.ModelSerializer):
             )
             return None
 
+    def validate(self, data):
+        """Validar que end_date_time no sea anterior a start_date_time"""
+        start = data.get('start_date_time') or (self.instance.start_date_time if self.instance else None)
+        end = data.get('end_date_time')
+
+        if start and end and end < start:
+            raise serializers.ValidationError({
+                "end_date_time": "La fecha/hora de fin no puede ser anterior a la de inicio"
+            })
+
+        return data
+
     def create(self, validated_data):
         """
         Ensure user_id is set either from payload or authenticated request.
         Avoids inserting NULL into the NOT NULL column.
+        Also sets clave_eds from the user's EDS if not provided.
         """
         request = self.context.get("request")
         user_id = validated_data.get("user_id")
@@ -626,6 +646,15 @@ class WorkOrderSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"user_id": "user_id es requerido para la orden de trabajo."}
             )
+
+        # Si no se proporciona clave_eds, usar la EDS del usuario asignado
+        if not validated_data.get("clave_eds"):
+            try:
+                user = Users.objects.get(id_usr_pk=validated_data["user_id"])
+                if user.clave_eds_fk:
+                    validated_data["clave_eds"] = user.clave_eds_fk
+            except Users.DoesNotExist:
+                pass
 
         return super().create(validated_data)
 
@@ -697,14 +726,30 @@ class WorkOrderListSerializer(serializers.ModelSerializer):
             return None
 
     def get_eds(self, obj):
-        """Obtener EDS desde el batch map (evita N+1)."""
-        if not obj.clave_eds:
+        """Obtener EDS desde el batch map (evita N+1) o del usuario asignado."""
+        clave_eds = obj.clave_eds
+
+        # Fallback: si no hay clave_eds en el WorkOrder, usar la del usuario
+        if not clave_eds and obj.user_id:
+            users_map = self.context.get('users_map', {})
+            if users_map:
+                user = users_map.get(obj.user_id)
+                if user:
+                    clave_eds = user.clave_eds_fk
+            else:
+                try:
+                    user = Users.objects.get(id_usr_pk=obj.user_id)
+                    clave_eds = user.clave_eds_fk
+                except Users.DoesNotExist:
+                    pass
+
+        if not clave_eds:
             return None
 
         # Usar datos batch del contexto si están disponibles
         eds_map = self.context.get('eds_map', {})
         if eds_map:
-            eds = eds_map.get(obj.clave_eds)
+            eds = eds_map.get(clave_eds)
             if eds:
                 return {
                     'id_eds_pk': eds.id_eds_pk,
@@ -717,7 +762,7 @@ class WorkOrderListSerializer(serializers.ModelSerializer):
 
         # Fallback: query individual
         try:
-            eds = EDS.objects.get(id_eds_pk=obj.clave_eds)
+            eds = EDS.objects.get(id_eds_pk=clave_eds)
             return {
                 'id_eds_pk': eds.id_eds_pk,
                 'name': eds.name,

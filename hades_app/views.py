@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import datetime, timedelta
 from django.conf import settings
 import base64
 import uuid
@@ -11,7 +12,8 @@ from django.contrib.auth import authenticate, login, logout
 from django.http import JsonResponse, HttpResponse
 from google.cloud import storage
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.decorators import api_view, permission_classes, action
+from rest_framework.decorators import api_view, permission_classes, action, authentication_classes
+from rest_framework.authentication import TokenAuthentication
 from rest_framework import status, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
@@ -27,8 +29,9 @@ from .models import (
     Roles,
 )
 from django.db import transaction
-from django.db.models import Count, Max, Avg, Q, F
+from django.db.models import Count, Max, Avg, Q, F, Prefetch
 from django.db.models.functions import Coalesce
+from django.utils import timezone
 from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from .serializers import (
@@ -726,13 +729,22 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
         """
         Listar work orders con paginación y batch loading optimizado.
 
-        Query params:
+        Query params de paginación:
         - page: número de página (default: 1)
         - page_size: registros por página (default: 50, max: 200)
         - no_pagination: 'true' para desactivar paginación
-        - user_id: filtrar por usuario
-        - form_template_id: filtrar por formulario
-        - clave_eds: filtrar por EDS
+
+        Query params de filtrado:
+        - user_id: filtrar por ID de usuario
+        - user_name: filtrar por nombre de usuario (búsqueda parcial)
+        - form_template_id: filtrar por ID de formulario
+        - clave_eds: filtrar por clave de EDS
+        - eds_name: filtrar por nombre de EDS (búsqueda parcial)
+        - completion_status: filtrar por estado (completed, pending, draft)
+        - has_findings: 'true' para formularios con calificación < 100
+        - search: búsqueda de texto en nombre de usuario, EDS o formulario
+        - start_date: fecha inicio (YYYY-MM-DD)
+        - end_date: fecha fin (YYYY-MM-DD)
         """
         logger = logging.getLogger("django")
         try:
@@ -806,6 +818,18 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
         - select_related para form_template
         - prefetch_related para questions
         - annotate para answers_count (evita N+1)
+
+        Filtros soportados:
+        - user_id: filtrar por ID de usuario
+        - user_name: filtrar por nombre de usuario (búsqueda parcial)
+        - form_template_id: filtrar por ID de formulario
+        - clave_eds: filtrar por clave de EDS
+        - eds_name: filtrar por nombre de EDS (búsqueda parcial)
+        - completion_status: filtrar por estado (completed, pending, draft)
+        - has_findings: 'true' para formularios con calificación < 100
+        - search: búsqueda de texto en nombre de usuario, EDS o formulario
+        - start_date: fecha inicio (YYYY-MM-DD)
+        - end_date: fecha fin (YYYY-MM-DD)
         """
         queryset = WorkOrder.objects.select_related(
             'form_template'
@@ -824,6 +848,15 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
         if user_id:
             queryset = queryset.filter(user_id=user_id)
 
+        # Filtro por nombre de usuario (búsqueda parcial)
+        user_name = self.request.query_params.get("user_name")
+        if user_name:
+            # Necesitamos hacer join con Users para filtrar por nombre
+            user_ids = Users.objects.filter(
+                name__icontains=user_name
+            ).values_list('id_usr_pk', flat=True)
+            queryset = queryset.filter(user_id__in=user_ids)
+
         form_template_id = self.request.query_params.get("form_template_id")
         if form_template_id:
             queryset = queryset.filter(form_template_id=form_template_id)
@@ -831,6 +864,82 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
         clave_eds = self.request.query_params.get("clave_eds")
         if clave_eds:
             queryset = queryset.filter(clave_eds=clave_eds)
+
+        # Filtro por nombre de EDS (búsqueda parcial)
+        eds_name = self.request.query_params.get("eds_name")
+        if eds_name:
+            # Necesitamos hacer join con EDS para filtrar por nombre
+            eds_claves = EDS.objects.filter(
+                name__icontains=eds_name
+            ).values_list('clave_eds', flat=True)
+            queryset = queryset.filter(clave_eds__in=eds_claves)
+
+        # Filtro por estado de completación (basado en anotaciones)
+        completion_status = self.request.query_params.get("completion_status")
+        if completion_status:
+            if completion_status == 'completed':
+                # Completado: total_answers >= total_questions AND total_questions > 0
+                queryset = queryset.filter(
+                    _answers_count__gte=F('_total_questions'),
+                    _total_questions__gt=0
+                )
+            elif completion_status == 'pending':
+                # Pendiente: total_answers == 0
+                queryset = queryset.filter(_answers_count=0)
+            elif completion_status == 'draft':
+                # Borrador: total_answers > 0 AND total_answers < total_questions
+                queryset = queryset.filter(
+                    _answers_count__gt=0,
+                    _answers_count__lt=F('_total_questions')
+                )
+
+        # Filtro por hallazgos (formularios con calificación < 100)
+        has_findings = self.request.query_params.get("has_findings")
+        if has_findings == 'true':
+            queryset = queryset.filter(
+                completion_grade__lt=100,
+                completion_grade__isnull=False
+            )
+
+        # Búsqueda de texto general
+        search = self.request.query_params.get("search")
+        if search:
+            # Buscar en nombre de usuario
+            user_ids = Users.objects.filter(
+                name__icontains=search
+            ).values_list('id_usr_pk', flat=True)
+
+            # Buscar en nombre de EDS
+            eds_claves = EDS.objects.filter(
+                name__icontains=search
+            ).values_list('clave_eds', flat=True)
+
+            # Buscar en nombre de formulario o combinar con usuarios/EDS
+            queryset = queryset.filter(
+                Q(user_id__in=user_ids) |
+                Q(clave_eds__in=eds_claves) |
+                Q(form_template__name__icontains=search) |
+                Q(form_template__description__icontains=search)
+            )
+
+        # Filtro por rango de fechas
+        start_date = self.request.query_params.get("start_date")
+        if start_date:
+            from datetime import datetime
+            try:
+                start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+                queryset = queryset.filter(date__gte=start_date_obj)
+            except ValueError:
+                pass
+
+        end_date = self.request.query_params.get("end_date")
+        if end_date:
+            from datetime import datetime
+            try:
+                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+                queryset = queryset.filter(date__lte=end_date_obj)
+            except ValueError:
+                pass
 
         return queryset.order_by('-date', '-id')
 
@@ -1453,8 +1562,11 @@ def dashboard_kpis(request):
     - zone: Filtrar por zona/plaza (opcional)
     - eds: Filtrar por clave_eds (opcional)
     - form: Filtrar por form_template_id (opcional)
-    - start_date: Fecha inicio YYYY-MM-DD (opcional)
-    - end_date: Fecha fin YYYY-MM-DD (opcional)
+    - start_date: Fecha inicio YYYY-MM-DD (opcional, default: 7 días atrás)
+    - end_date: Fecha fin YYYY-MM-DD (opcional, default: hoy)
+
+    Por defecto, retorna datos de los últimos 7 días.
+    Para cargar todo el historial, especifica start_date explícitamente.
     """
     logger = logging.getLogger("django")
 
@@ -1466,47 +1578,82 @@ def dashboard_kpis(request):
         start_date = request.query_params.get("start_date")
         end_date = request.query_params.get("end_date")
 
-        # Base queryset de work orders
-        work_orders_qs = WorkOrder.objects.select_related("form_template").all()
+        # Default to last 7 days if no date range specified
+        if not start_date and not end_date:
+            end_date_obj = timezone.now().date()
+            start_date_obj = end_date_obj - timedelta(days=7)
+        else:
+            if start_date:
+                start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+            else:
+                start_date_obj = None
+            if end_date:
+                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+            else:
+                end_date_obj = None
 
-        # Aplicar filtros
-        if start_date:
-            work_orders_qs = work_orders_qs.filter(date__gte=start_date)
-        if end_date:
-            work_orders_qs = work_orders_qs.filter(date__lte=end_date)
+        # Base queryset de work orders with optimized prefetching
+        work_orders_qs = (
+            WorkOrder.objects
+            .select_related("form_template")
+            .prefetch_related(
+                "form_template__questions",
+                Prefetch(
+                    "formanswers_set",
+                    queryset=FormAnswers.objects.select_related("question")
+                )
+            )
+            .all()
+        )
+
+        # Aplicar filtros de fecha
+        if start_date_obj:
+            work_orders_qs = work_orders_qs.filter(date__gte=start_date_obj)
+        if end_date_obj:
+            work_orders_qs = work_orders_qs.filter(date__lte=end_date_obj)
         if form_filter:
             work_orders_qs = work_orders_qs.filter(form_template_id=form_filter)
 
-        # Obtener todas las EDS
-        eds_list = EDS.objects.all()
-        if zone_filter:
-            eds_list = eds_list.filter(plaza=zone_filter)
-        if eds_filter:
-            eds_list = eds_list.filter(id_eds_pk=eds_filter)
-
-        eds_map = {eds.id_eds_pk: eds for eds in eds_list}
-        eds_claves = set(eds_map.keys())
-
-        # Filtrar work orders por EDS
+        # Optimización: Solo cargar EDS que aparecen en work orders filtradas
         if zone_filter or eds_filter:
-            work_orders_qs = work_orders_qs.filter(clave_eds__in=eds_claves)
+            # Si hay filtros de zona/eds, aplicar esos filtros primero
+            eds_list = EDS.objects.all()
+            if zone_filter:
+                eds_list = eds_list.filter(plaza=zone_filter)
+            if eds_filter:
+                eds_list = eds_list.filter(id_eds_pk=eds_filter)
 
-        # Obtener todos los form templates activos
-        form_templates = FormTemplate.objects.filter(is_active=True)
+            eds_map = {eds.id_eds_pk: eds for eds in eds_list}
+            eds_claves = set(eds_map.keys())
+            work_orders_qs = work_orders_qs.filter(clave_eds__in=eds_claves)
+        else:
+            # Sin filtros: solo cargar EDS que realmente aparecen en work orders
+            clave_eds_in_orders = set(
+                work_orders_qs.values_list('clave_eds', flat=True).distinct()
+            )
+            eds_list = EDS.objects.filter(id_eds_pk__in=clave_eds_in_orders)
+            eds_map = {eds.id_eds_pk: eds for eds in eds_list}
+            eds_claves = set(eds_map.keys())
+
+        # Optimización: Solo cargar form templates usados en work orders filtradas
+        form_template_ids = work_orders_qs.values_list('form_template_id', flat=True).distinct()
+        form_templates = FormTemplate.objects.filter(id__in=form_template_ids)
         form_templates_map = {ft.id: ft for ft in form_templates}
 
         # Calcular compliance grade para cada work order
         def calculate_completion_grade(work_order):
-            """Calcula el grade de cumplimiento para una work order"""
+            """Calcula el grade de cumplimiento para una work order (usa datos prefetched)"""
             if not work_order.form_template:
                 return None
 
+            # Use prefetched questions - no query
             questions = list(work_order.form_template.questions.all())
             total_questions = len(questions)
             if total_questions == 0:
                 return None
 
-            answers = FormAnswers.objects.filter(work_order=work_order)
+            # Use prefetched answers - no query
+            answers = work_order.formanswers_set.all()
             answers_by_question = {a.question_id: a for a in answers}
 
             correct_answers = 0
@@ -1542,12 +1689,11 @@ def dashboard_kpis(request):
         for wo in work_orders_qs:
             clave_eds = wo.clave_eds
             if not clave_eds:
-                # Intentar obtener del primer form answer
-                first_answer = FormAnswers.objects.filter(
-                    work_order=wo, clave_eds_fk__isnull=False
-                ).exclude(clave_eds_fk='').first()
-                if first_answer:
-                    clave_eds = first_answer.clave_eds_fk
+                # Intentar obtener del primer form answer (usa datos prefetched)
+                for answer in wo.formanswers_set.all():
+                    if answer.clave_eds_fk and answer.clave_eds_fk != '':
+                        clave_eds = answer.clave_eds_fk
+                        break
 
             if not clave_eds or clave_eds not in eds_claves:
                 continue
@@ -1565,11 +1711,12 @@ def dashboard_kpis(request):
             if grade is None:
                 continue
 
-            # Contar preguntas y respuestas
-            total_questions = form_template.questions.count()
-            total_answers = FormAnswers.objects.filter(
-                work_order=wo
-            ).exclude(answer__isnull=True).exclude(answer__exact="").count()
+            # Contar preguntas y respuestas (usa datos prefetched - sin queries)
+            total_questions = len(form_template.questions.all())
+            total_answers = len([
+                a for a in wo.formanswers_set.all()
+                if a.answer not in (None, "")
+            ])
 
             # Agregar a datos de EDS
             eds_compliance_data[clave_eds]["work_orders"].append({
@@ -1809,3 +1956,158 @@ def _compare_with_expected(qtype, expected_value, raw_value):
         return exp_dec is not None and ans_dec is not None and ans_dec >= exp_dec
 
     return str(raw_value).strip().lower() == str(expected_value).strip().lower()
+
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def powerbi_canastilla_inventory(request):
+    """
+    Endpoint de solo lectura para Power BI - Formulario de Inventario Canastilla.
+
+    Retorna datos de WorkOrders para el formulario específico:
+    "F-PRO-OPE-017 (A) INVENTARIO CANASTILLA VERSION 000"
+
+    Autenticación: Token de API
+    Header requerido: Authorization: Token <token-generado>
+
+    Query params:
+    - start_date: Fecha inicio YYYY-MM-DD (opcional)
+    - end_date: Fecha fin YYYY-MM-DD (opcional)
+    - clave_eds: Filtrar por EDS (opcional)
+    - user_id: Filtrar por usuario (opcional)
+
+    Retorna JSON con datos para Power BI.
+    """
+    logger = logging.getLogger("django")
+
+    try:
+        # Constante del nombre del formulario
+        CANASTILLA_FORM_NAME = "F-PRO-OPE-017 (A) INVENTARIO CANASTILLA VERSION 000"
+
+        # Buscar el form template específico
+        form_template = FormTemplate.objects.filter(name=CANASTILLA_FORM_NAME).first()
+
+        if not form_template:
+            return Response({
+                "error": f"Form template '{CANASTILLA_FORM_NAME}' no encontrado",
+                "count": 0,
+                "results": []
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        # Base queryset - solo este formulario
+        queryset = WorkOrder.objects.filter(
+            form_template=form_template
+        ).select_related('form_template')
+
+        # Aplicar filtros opcionales de query params
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        clave_eds = request.query_params.get('clave_eds')
+        user_id = request.query_params.get('user_id')
+
+        if start_date:
+            try:
+                queryset = queryset.filter(date__gte=start_date)
+            except Exception as e:
+                logger.warning(f"Invalid start_date parameter: {start_date}")
+
+        if end_date:
+            try:
+                queryset = queryset.filter(date__lte=end_date)
+            except Exception as e:
+                logger.warning(f"Invalid end_date parameter: {end_date}")
+
+        if clave_eds:
+            queryset = queryset.filter(clave_eds=clave_eds)
+
+        if user_id:
+            try:
+                queryset = queryset.filter(user_id=int(user_id))
+            except ValueError:
+                logger.warning(f"Invalid user_id parameter: {user_id}")
+
+        # Batch load users y EDS para evitar N+1 queries
+        user_ids = list(set(queryset.values_list('user_id', flat=True)))
+        users_map = {
+            u.id_usr_pk: u
+            for u in Users.objects.filter(id_usr_pk__in=user_ids)
+        }
+
+        # Intentar cargar EDS (puede fallar si la tabla no existe o está en otra DB)
+        eds_map = {}
+        try:
+            eds_claves = list(set(queryset.values_list('clave_eds', flat=True)))
+            eds_map = {
+                e.id_eds_pk: e
+                for e in EDS.objects.filter(id_eds_pk__in=eds_claves)
+            }
+        except Exception as e:
+            logger.warning(f"Could not load EDS data: {e}")
+
+        # Batch load: Obtener todas las respuestas de estas work orders
+        work_order_ids = list(queryset.values_list('id', flat=True))
+        answers_qs = FormAnswers.objects.filter(
+            work_order_id__in=work_order_ids
+        ).select_related('question').order_by('work_order_id', 'question__question_order')
+
+        # Agrupar respuestas por work_order_id
+        answers_by_wo = {}
+        for answer in answers_qs:
+            if answer.work_order_id not in answers_by_wo:
+                answers_by_wo[answer.work_order_id] = []
+            answers_by_wo[answer.work_order_id].append(answer)
+
+        # Construir array de resultados
+        results = []
+        for wo in queryset.order_by('-date'):
+            user = users_map.get(wo.user_id)
+            eds = eds_map.get(wo.clave_eds)
+
+            # Calcular duración en minutos si ambas fechas existen
+            duracion_minutos = None
+            if wo.start_date_time and wo.end_date_time:
+                delta = wo.end_date_time - wo.start_date_time
+                duracion_minutos = int(delta.total_seconds() / 60)
+
+            # Construir array de productos (preguntas/respuestas)
+            productos = []
+            for answer in answers_by_wo.get(wo.id, []):
+                productos.append({
+                    "producto": answer.question.question,
+                    "cantidad": answer.answer,
+                    "comentarios": answer.comments
+                })
+
+            # Convertir fechas UTC a zona horaria local
+            start_local = timezone.localtime(wo.start_date_time) if wo.start_date_time else None
+            end_local = timezone.localtime(wo.end_date_time) if wo.end_date_time else None
+
+            results.append({
+                "work_order_id": wo.id,
+                "eds": wo.clave_eds,
+                "eds_nombre": eds.name if eds else None,
+                "fecha_inicio": start_local.strftime("%Y-%m-%d") if start_local else None,
+                "hora_inicio": start_local.strftime("%H:%M:%S") if start_local else None,
+                "fecha_fin": end_local.strftime("%Y-%m-%d") if end_local else None,
+                "hora_fin": end_local.strftime("%H:%M:%S") if end_local else None,
+                "usuario_id": user.id_usr_pk if user else None,
+                "usuario_nombre": user.name if user else None,
+                "usuario_email": user.email if user else None,
+                "fecha_creacion": wo.date.isoformat() if wo.date else None,
+                "duracion_minutos": duracion_minutos,
+                "productos": productos
+            })
+
+        return Response({
+            "count": len(results),
+            "form_template": CANASTILLA_FORM_NAME,
+            "results": results
+        })
+
+    except Exception as exc:
+        logger.exception("Error in /api/powerbi/canastilla-inventory/")
+        return Response({
+            "error": "Error interno del servidor",
+            "detail": str(exc)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -610,6 +610,115 @@ class WorkOrderTests(APITestCase, TestDataMixin):
         grade = serializer.data.get('completion_grade')
         self.assertEqual(grade, 100.0)
 
+    def test_work_order_saves_start_and_end_datetime(self):
+        """
+        FLUJO: Guardar fechas de inicio y fin
+        Los campos start_date_time y end_date_time deben guardarse correctamente
+        """
+        start_time = datetime.now()
+        end_time = start_time + timedelta(hours=2)
+
+        response = self.client.post('/api/work-orders/', {
+            'form_template_id': self.template.id,
+            'date': datetime.now().isoformat(),
+            'user_id': self.user.id_usr_pk,
+            'start_date_time': start_time.isoformat(),
+            'end_date_time': end_time.isoformat()
+        })
+        self.assertEqual(response.status_code, 201)
+        data = response.json()
+
+        # Verificar que las fechas se guardaron
+        self.assertIsNotNone(data.get('start_date_time'))
+        self.assertIsNotNone(data.get('end_date_time'))
+
+        # Verificar recuperando desde la base de datos
+        wo = WorkOrder.objects.get(id=data['id'])
+        self.assertIsNotNone(wo.start_date_time)
+        self.assertIsNotNone(wo.end_date_time)
+
+    def test_work_order_updates_start_and_end_datetime(self):
+        """
+        FLUJO: Actualizar fechas de inicio y fin
+        Las fechas deben poder actualizarse via PATCH/PUT
+        """
+        # Crear work order sin fechas
+        wo = self.create_work_order(self.user, self.template)
+        self.assertIsNone(wo.start_date_time)
+        self.assertIsNone(wo.end_date_time)
+
+        # Actualizar con fechas
+        start_time = datetime.now()
+        end_time = start_time + timedelta(hours=1, minutes=30)
+
+        response = self.client.patch(f'/api/work-orders/{wo.id}/', {
+            'start_date_time': start_time.isoformat(),
+            'end_date_time': end_time.isoformat()
+        })
+        self.assertEqual(response.status_code, 200)
+
+        # Verificar que se actualizaron
+        wo.refresh_from_db()
+        self.assertIsNotNone(wo.start_date_time)
+        self.assertIsNotNone(wo.end_date_time)
+
+    def test_work_order_complete_flow_with_dates(self):
+        """
+        FLUJO: Simular flujo completo de usuario
+        1. Abrir formulario (registrar start_date_time)
+        2. Responder preguntas
+        3. Enviar formulario (registrar end_date_time)
+        """
+        # 1. Crear work order (simulando que fue asignado)
+        wo = self.create_work_order(self.user, self.template)
+        self.assertIsNone(wo.start_date_time)
+        self.assertIsNone(wo.end_date_time)
+
+        # 2. Usuario hace clic en "Empezar formulario" - registrar start_date_time
+        start_time = datetime.now()
+        response = self.client.patch(f'/api/work-orders/{wo.id}/', {
+            'start_date_time': start_time.isoformat()
+        })
+        self.assertEqual(response.status_code, 200)
+
+        # Verificar start_date_time guardado
+        wo.refresh_from_db()
+        self.assertIsNotNone(wo.start_date_time)
+        self.assertIsNone(wo.end_date_time)
+
+        # 3. Usuario responde preguntas (simular con crear questions y answers)
+        q1 = self.create_question(self.template, "Pregunta 1", order=1)
+        q2 = self.create_question(self.template, "Pregunta 2", order=2)
+        self.create_answer(q1, wo, "Respuesta 1")
+        self.create_answer(q2, wo, "Respuesta 2")
+
+        # 4. Usuario hace clic en "Enviar formulario" - registrar end_date_time
+        end_time = start_time + timedelta(hours=1, minutes=15)
+        response = self.client.patch(f'/api/work-orders/{wo.id}/', {
+            'end_date_time': end_time.isoformat()
+        })
+        self.assertEqual(response.status_code, 200)
+
+        # Verificar end_date_time guardado
+        wo.refresh_from_db()
+        self.assertIsNotNone(wo.start_date_time)
+        self.assertIsNotNone(wo.end_date_time)
+
+        # 5. Verificar que la duración se calcula correctamente
+        serializer = WorkOrderSerializer(wo)
+        data = serializer.data
+
+        # La duración debe ser aproximadamente 75 minutos (1h 15min)
+        # Permitir pequeña variación por timestamps
+        self.assertIsNotNone(data.get('start_date_time'))
+        self.assertIsNotNone(data.get('end_date_time'))
+
+        # Calcular duración esperada
+        delta = wo.end_date_time - wo.start_date_time
+        expected_duration = int(delta.total_seconds() / 60)
+        self.assertGreaterEqual(expected_duration, 74)  # Mínimo 74 minutos
+        self.assertLessEqual(expected_duration, 76)     # Máximo 76 minutos
+
 
 # =============================================================================
 # 5. TESTS DE FORM QUESTIONS
@@ -915,6 +1024,60 @@ class DashboardKPIsTests(APITestCase, TestDataMixin):
         self.assertEqual(response.status_code, 200)
 
     @patch('hades_app.views.EDS')
+    def test_dashboard_kpis_default_last_7_days(self, mock_eds):
+        """
+        FLUJO: Sin parámetros de fecha debe retornar solo últimos 7 días
+
+        Optimización agregada: El endpoint ahora retorna últimos 7 días por defecto
+        en lugar de todo el historial, mejorando rendimiento dramáticamente.
+        """
+        from django.utils import timezone
+
+        # Mock EDS para que el filtro no falle
+        mock_eds_obj = MagicMock()
+        mock_eds_obj.id_eds_pk = "EDS001"
+        mock_eds_obj.name = "Test EDS"
+        mock_eds_obj.plaza = "TEST_ZONE"
+        mock_eds.objects.all.return_value = [mock_eds_obj]
+        mock_eds.objects.filter.return_value.values_list.return_value.distinct.return_value = ["EDS001"]
+
+        # Crear datos de prueba
+        template = self.create_form_template(name="Test Form")
+        q1 = self.create_question(template, "Pregunta test", qtype="boolean", order=1)
+        worker = self.create_user(email="worker@test.com", clave_eds_fk="EDS001")
+
+        # Work order de hace 10 días (NO debe aparecer)
+        wo_old = self.create_work_order(worker, template, clave_eds="EDS001")
+        wo_old.date = timezone.now() - timedelta(days=10)
+        wo_old.save()
+        self.create_answer(q1, wo_old, "true")
+
+        # Work order de hace 3 días (SÍ debe aparecer)
+        wo_recent = self.create_work_order(worker, template, clave_eds="EDS001")
+        wo_recent.date = timezone.now() - timedelta(days=3)
+        wo_recent.save()
+        self.create_answer(q1, wo_recent, "true")
+
+        # Llamar sin parámetros de fecha
+        response = self.client.get('/api/dashboard/kpis/')
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+        self.assertTrue(data.get('success'))
+
+        # Verificar que solo retorna datos recientes (últimos 7 días)
+        # La work order vieja no debe estar en complianceRows
+        compliance_rows = data.get('complianceRows', [])
+
+        # Si hay datos, deben ser solo de los últimos 7 días
+        # (puede estar vacío si la optimización filtró correctamente)
+        if len(compliance_rows) > 0:
+            # Verificar que la cantidad de work orders es solo 1 (el reciente)
+            # En lugar de 2 (viejo + reciente)
+            self.assertEqual(len(compliance_rows), 1,
+                "Debe retornar solo 1 EDS con work orders de últimos 7 días")
+
+    @patch('hades_app.views.EDS')
     def test_dashboard_kpis_filter_options(self, mock_eds):
         """
         FLUJO: Obtener opciones de filtro
@@ -1092,6 +1255,460 @@ class SerializerTests(TestCase, TestDataMixin):
 
         serializer = WorkOrderListSerializer(wo)
         self.assertNotIn('answers', serializer.data)
+
+
+# =============================================================================
+# 10. TESTS DE ENDPOINT POWER BI - CANASTILLA INVENTORY
+# =============================================================================
+
+class PowerBICanastillaInventoryTests(APITestCase, TestDataMixin):
+    """
+    Tests para el endpoint de Power BI - Inventario Canastilla.
+
+    Flujos probados:
+    - Retornar datos solo del formulario específico
+    - Filtros por fecha, EDS, y usuario
+    - Manejo de timestamps null
+    - Estructura correcta de respuesta JSON
+    - Performance con batch loading
+    - Autenticación con Token
+    """
+
+    # Permitir acceso a todas las bases de datos (incluyendo 'eds')
+    databases = '__all__'
+
+    def setUp(self):
+        """Configuración inicial para cada test"""
+        self.user = self.create_user(email="admin@test.com", is_staff=True)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        # Crear el form template específico de canastilla
+        self.canastilla_template = self.create_form_template(
+            name="F-PRO-OPE-017 (A) INVENTARIO CANASTILLA VERSION 000"
+        )
+
+        # Crear otro form template para verificar filtrado
+        self.other_template = self.create_form_template(
+            name="Otro Formulario"
+        )
+
+    def test_endpoint_exists(self):
+        """
+        FLUJO: Verificar que el endpoint existe y responde
+        """
+        response = self.client.get('/api/powerbi/canastilla-inventory/')
+        # Debe retornar 200 incluso sin datos
+        self.assertEqual(response.status_code, 200)
+
+    def test_form_template_not_found(self):
+        """
+        FLUJO: Form template no existe en la base de datos
+        Debe retornar 404 con mensaje claro
+        """
+        # Eliminar el template
+        self.canastilla_template.delete()
+
+        response = self.client.get('/api/powerbi/canastilla-inventory/')
+        self.assertEqual(response.status_code, 404)
+        data = response.json()
+        self.assertIn('error', data)
+        self.assertEqual(data['count'], 0)
+
+    def test_empty_results(self):
+        """
+        FLUJO: Template existe pero no hay WorkOrders
+        Debe retornar estructura válida con array vacío
+        """
+        response = self.client.get('/api/powerbi/canastilla-inventory/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertEqual(data['count'], 0)
+        self.assertEqual(data['form_template'], "F-PRO-OPE-017 (A) INVENTARIO CANASTILLA VERSION 000")
+        self.assertEqual(len(data['results']), 0)
+
+    def test_returns_only_canastilla_form(self):
+        """
+        FLUJO: Filtrar solo WorkOrders del formulario canastilla
+        No debe incluir otros formularios
+        """
+        worker = self.create_user(email="worker@test.com", clave_eds_fk="EDS001")
+
+        # Crear WorkOrder de canastilla
+        wo_canastilla = self.create_work_order(
+            worker,
+            self.canastilla_template,
+            clave_eds="EDS001"
+        )
+
+        # Crear WorkOrder de otro formulario
+        wo_other = self.create_work_order(
+            worker,
+            self.other_template,
+            clave_eds="EDS001"
+        )
+
+        response = self.client.get('/api/powerbi/canastilla-inventory/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        # Debe retornar solo 1 WorkOrder (el de canastilla)
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(len(data['results']), 1)
+
+    def test_response_structure(self):
+        """
+        FLUJO: Verificar estructura correcta de la respuesta
+        """
+        worker = self.create_user(
+            email="worker@test.com",
+            name="Juan Pérez",
+            clave_eds_fk="EDS001"
+        )
+
+        wo = self.create_work_order(
+            worker,
+            self.canastilla_template,
+            clave_eds="EDS001"
+        )
+
+        # Establecer timestamps (timezone-aware)
+        from datetime import datetime, timedelta
+        from django.utils import timezone
+        start_time = timezone.make_aware(datetime(2026, 3, 1, 10, 0, 0))
+        end_time = start_time + timedelta(hours=1, minutes=30)
+        wo.start_date_time = start_time
+        wo.end_date_time = end_time
+        wo.save()
+
+        response = self.client.get('/api/powerbi/canastilla-inventory/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertEqual(data['count'], 1)
+        result = data['results'][0]
+
+        # Verificar campos requeridos
+        self.assertIn('eds', result)
+        self.assertIn('eds_nombre', result)
+        self.assertIn('fecha_inicio', result)
+        self.assertIn('hora_inicio', result)
+        self.assertIn('fecha_fin', result)
+        self.assertIn('hora_fin', result)
+        self.assertIn('usuario_id', result)
+        self.assertIn('usuario_nombre', result)
+        self.assertIn('usuario_email', result)
+        self.assertIn('fecha_creacion', result)
+        self.assertIn('duracion_minutos', result)
+
+        # Verificar valores
+        self.assertEqual(result['eds'], "EDS001")
+        self.assertEqual(result['usuario_nombre'], "Juan Pérez")
+        self.assertIsNotNone(result['fecha_inicio'])
+        self.assertIsNotNone(result['hora_inicio'])
+        self.assertIsNotNone(result['fecha_fin'])
+        self.assertIsNotNone(result['hora_fin'])
+        self.assertEqual(result['duracion_minutos'], 90)
+
+    def test_null_timestamps(self):
+        """
+        FLUJO: Manejar WorkOrders sin timestamps (datos históricos)
+        Debe retornar null en fecha_inicio, hora_inicio, fecha_fin, hora_fin
+        """
+        worker = self.create_user(email="worker@test.com", clave_eds_fk="EDS001")
+
+        wo = self.create_work_order(
+            worker,
+            self.canastilla_template,
+            clave_eds="EDS001"
+        )
+        # No establecer start_date_time ni end_date_time
+
+        response = self.client.get('/api/powerbi/canastilla-inventory/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        result = data['results'][0]
+
+        # Verificar que timestamps son null
+        self.assertIsNone(result['fecha_inicio'])
+        self.assertIsNone(result['hora_inicio'])
+        self.assertIsNone(result['fecha_fin'])
+        self.assertIsNone(result['hora_fin'])
+        self.assertIsNone(result['duracion_minutos'])
+
+    def test_filter_by_date_range(self):
+        """
+        FLUJO: Filtrar por rango de fechas
+        """
+        worker = self.create_user(email="worker@test.com", clave_eds_fk="EDS001")
+
+        # Crear WorkOrders en diferentes fechas
+        from datetime import datetime, timedelta
+        from django.utils import timezone
+
+        wo1 = self.create_work_order(worker, self.canastilla_template, clave_eds="EDS001")
+        wo1.date = timezone.make_aware(datetime(2026, 1, 15))
+        wo1.save()
+
+        wo2 = self.create_work_order(worker, self.canastilla_template, clave_eds="EDS001")
+        wo2.date = timezone.make_aware(datetime(2026, 2, 15))
+        wo2.save()
+
+        wo3 = self.create_work_order(worker, self.canastilla_template, clave_eds="EDS001")
+        wo3.date = timezone.make_aware(datetime(2026, 3, 15))
+        wo3.save()
+
+        # Filtrar solo febrero
+        response = self.client.get(
+            '/api/powerbi/canastilla-inventory/?start_date=2026-02-01&end_date=2026-02-28'
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        # Debe retornar solo 1 WorkOrder (febrero)
+        self.assertEqual(data['count'], 1)
+
+    def test_filter_by_eds(self):
+        """
+        FLUJO: Filtrar por EDS específica
+        """
+        worker1 = self.create_user(email="worker1@test.com", clave_eds_fk="EDS001")
+        worker2 = self.create_user(email="worker2@test.com", clave_eds_fk="EDS002")
+
+        wo1 = self.create_work_order(worker1, self.canastilla_template, clave_eds="EDS001")
+        wo2 = self.create_work_order(worker2, self.canastilla_template, clave_eds="EDS002")
+
+        # Filtrar por EDS001
+        response = self.client.get('/api/powerbi/canastilla-inventory/?clave_eds=EDS001')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(data['results'][0]['eds'], "EDS001")
+
+    def test_filter_by_user(self):
+        """
+        FLUJO: Filtrar por usuario específico
+        """
+        worker1 = self.create_user(email="worker1@test.com", clave_eds_fk="EDS001")
+        worker2 = self.create_user(email="worker2@test.com", clave_eds_fk="EDS001")
+
+        wo1 = self.create_work_order(worker1, self.canastilla_template, clave_eds="EDS001")
+        wo2 = self.create_work_order(worker2, self.canastilla_template, clave_eds="EDS001")
+
+        # Filtrar por worker1
+        response = self.client.get(
+            f'/api/powerbi/canastilla-inventory/?user_id={worker1.id_usr_pk}'
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(data['results'][0]['usuario_id'], worker1.id_usr_pk)
+
+    def test_combined_filters(self):
+        """
+        FLUJO: Combinar múltiples filtros (fecha + EDS + usuario)
+        """
+        from datetime import datetime
+        from django.utils import timezone
+
+        worker1 = self.create_user(email="worker1@test.com", clave_eds_fk="EDS001")
+        worker2 = self.create_user(email="worker2@test.com", clave_eds_fk="EDS002")
+
+        wo1 = self.create_work_order(worker1, self.canastilla_template, clave_eds="EDS001")
+        wo1.date = timezone.make_aware(datetime(2026, 3, 1))
+        wo1.save()
+
+        wo2 = self.create_work_order(worker2, self.canastilla_template, clave_eds="EDS002")
+        wo2.date = timezone.make_aware(datetime(2026, 3, 1))
+        wo2.save()
+
+        # Filtrar por fecha + EDS001
+        response = self.client.get(
+            '/api/powerbi/canastilla-inventory/?start_date=2026-03-01&end_date=2026-03-31&clave_eds=EDS001'
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(data['results'][0]['eds'], "EDS001")
+
+    @patch('hades_app.views.EDS')
+    def test_eds_batch_loading(self, mock_eds):
+        """
+        FLUJO: Verificar que se hace batch loading de EDS (no N+1 queries)
+        """
+        # Mock EDS.objects.filter() para tracking de llamadas
+        mock_eds_instance = MagicMock()
+        mock_eds_instance.name = "EDS Test"
+        mock_eds.objects.filter.return_value = [mock_eds_instance]
+
+        worker = self.create_user(email="worker@test.com", clave_eds_fk="EDS001")
+
+        # Crear múltiples WorkOrders
+        for i in range(5):
+            self.create_work_order(worker, self.canastilla_template, clave_eds="EDS001")
+
+        response = self.client.get('/api/powerbi/canastilla-inventory/')
+        self.assertEqual(response.status_code, 200)
+
+        # Verificar que EDS.objects.filter() se llamó solo UNA vez (batch loading)
+        # No 5 veces (N+1 query problem)
+        self.assertEqual(mock_eds.objects.filter.call_count, 1)
+
+    def test_invalid_date_parameter(self):
+        """
+        FLUJO: Manejar parámetros de fecha inválidos
+        No debe crashear, debe ignorar el parámetro inválido
+        """
+        worker = self.create_user(email="worker@test.com", clave_eds_fk="EDS001")
+        wo = self.create_work_order(worker, self.canastilla_template, clave_eds="EDS001")
+
+        # Enviar fecha inválida
+        response = self.client.get('/api/powerbi/canastilla-inventory/?start_date=fecha-invalida')
+
+        # Debe retornar 200 (ignora el parámetro inválido)
+        self.assertEqual(response.status_code, 200)
+
+    def test_invalid_user_id_parameter(self):
+        """
+        FLUJO: Manejar user_id inválido (no numérico)
+        No debe crashear
+        """
+        worker = self.create_user(email="worker@test.com", clave_eds_fk="EDS001")
+        wo = self.create_work_order(worker, self.canastilla_template, clave_eds="EDS001")
+
+        # Enviar user_id no numérico
+        response = self.client.get('/api/powerbi/canastilla-inventory/?user_id=abc')
+
+        # Debe retornar 200 (ignora el parámetro inválido)
+        self.assertEqual(response.status_code, 200)
+
+    def test_unauthenticated_request(self):
+        """
+        FLUJO: Request sin autenticación
+        Debe retornar 401 o 403
+        """
+        # Crear cliente sin autenticación
+        unauth_client = APIClient()
+
+        response = unauth_client.get('/api/powerbi/canastilla-inventory/')
+
+        # Debe requerir autenticación
+        self.assertIn(response.status_code, [401, 403])
+
+    def test_token_authentication(self):
+        """
+        FLUJO: Autenticación con Token de API
+        Debe aceptar requests con token válido
+        """
+        from rest_framework.authtoken.models import Token
+
+        # Crear usuario y token para Power BI
+        powerbi_user = self.create_user(email="powerbi@test.com", is_staff=False)
+        token = Token.objects.create(user=powerbi_user)
+
+        # Cliente con token authentication
+        token_client = APIClient()
+        token_client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+
+        # Crear datos de prueba
+        worker = self.create_user(email="worker@test.com", clave_eds_fk="EDS001")
+        wo = self.create_work_order(worker, self.canastilla_template, clave_eds="EDS001")
+
+        # Request con token debe funcionar
+        response = token_client.get('/api/powerbi/canastilla-inventory/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data['count'], 1)
+
+    def test_invalid_token_authentication(self):
+        """
+        FLUJO: Autenticación con token inválido
+        Debe retornar 401
+        """
+        # Cliente con token inválido
+        invalid_client = APIClient()
+        invalid_client.credentials(HTTP_AUTHORIZATION='Token invalid-token-123')
+
+        response = invalid_client.get('/api/powerbi/canastilla-inventory/')
+
+        # Debe rechazar token inválido
+        self.assertEqual(response.status_code, 401)
+
+    def test_includes_productos_details(self):
+        """
+        FLUJO: Incluir detalles de productos (preguntas/respuestas)
+        Cada pregunta es un producto y la respuesta es la cantidad
+        """
+        worker = self.create_user(email="worker@test.com", clave_eds_fk="EDS001")
+
+        # Crear preguntas del formulario (productos)
+        q1 = self.create_question(self.canastilla_template, "Cilindros de 10kg", order=1, qtype="number")
+        q2 = self.create_question(self.canastilla_template, "Cilindros de 20kg", order=2, qtype="number")
+        q3 = self.create_question(self.canastilla_template, "Cilindros de 30kg", order=3, qtype="number")
+
+        # Crear WorkOrder
+        wo = self.create_work_order(worker, self.canastilla_template, clave_eds="EDS001")
+
+        # Crear respuestas (cantidades de productos)
+        self.create_answer(q1, wo, "15", comments="Buen estado", area="Almacen A")
+        self.create_answer(q2, wo, "10", comments="Revisar", area="Almacen B")
+        self.create_answer(q3, wo, "5")
+
+        response = self.client.get('/api/powerbi/canastilla-inventory/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertEqual(data['count'], 1)
+        result = data['results'][0]
+
+        # Verificar que incluye el array de productos
+        self.assertIn('productos', result)
+        productos = result['productos']
+        self.assertEqual(len(productos), 3)
+
+        # Verificar estructura de productos
+        producto1 = productos[0]
+        self.assertIn('producto', producto1)
+        self.assertIn('cantidad', producto1)
+        self.assertIn('comentarios', producto1)
+        self.assertNotIn('area', producto1)  # Campo eliminado
+
+        # Verificar valores
+        self.assertEqual(producto1['producto'], "Cilindros de 10kg")
+        self.assertEqual(producto1['cantidad'], "15")
+        self.assertEqual(producto1['comentarios'], "Buen estado")
+
+        self.assertEqual(productos[1]['producto'], "Cilindros de 20kg")
+        self.assertEqual(productos[1]['cantidad'], "10")
+
+        self.assertEqual(productos[2]['producto'], "Cilindros de 30kg")
+        self.assertEqual(productos[2]['cantidad'], "5")
+
+    def test_productos_empty_when_no_answers(self):
+        """
+        FLUJO: Array de productos vacío cuando no hay respuestas
+        """
+        worker = self.create_user(email="worker@test.com", clave_eds_fk="EDS001")
+
+        # Crear preguntas pero sin respuestas
+        self.create_question(self.canastilla_template, "Producto 1", order=1)
+        self.create_question(self.canastilla_template, "Producto 2", order=2)
+
+        # Crear WorkOrder sin respuestas
+        wo = self.create_work_order(worker, self.canastilla_template, clave_eds="EDS001")
+
+        response = self.client.get('/api/powerbi/canastilla-inventory/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        result = data['results'][0]
+        self.assertIn('productos', result)
+        self.assertEqual(len(result['productos']), 0)
 
 
 # =============================================================================

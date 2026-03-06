@@ -20,6 +20,8 @@ urlpatterns = [
     path("api/work-orders/clear-all/", views.clear_work_orders, name="clear_work_orders"),
     # Dashboard KPIs endpoint
     path("api/dashboard/kpis/", views.dashboard_kpis, name="dashboard_kpis"),
+    # Power BI endpoint
+    path("api/powerbi/canastilla-inventory/", views.powerbi_canastilla_inventory, name="powerbi_canastilla_inventory"),
     # Auth endpoints para SPA/PWA
     path("api/auth/csrf/", views.csrf, name="csrf"),
     path("api/auth/login/", views.login_view, name="login"),
