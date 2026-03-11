@@ -298,10 +298,17 @@ class FormTemplate(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True)
+    is_persistent = models.BooleanField(
+        default=False,
+        help_text="Si está activo, el formulario reaparece como pendiente tras completarse"
+    )
 
     class Meta:
         db_table = "FormTemplate"
         ordering = ["name"]
+        indexes = [
+            models.Index(fields=['is_active'], name='ft_is_active_idx'),
+        ]
 
     def __str__(self):
         return self.name
@@ -340,6 +347,11 @@ class WorkOrder(models.Model):
     class Meta:
         db_table = "WorkOrder"
         ordering = ["-date"]
+        indexes = [
+            models.Index(fields=['date'], name='wo_date_idx'),
+            models.Index(fields=['clave_eds'], name='wo_clave_eds_idx'),
+            models.Index(fields=['date', 'clave_eds'], name='wo_date_clave_idx'),
+        ]
 
     def __str__(self):
         return f"{self.form_template.name} - {self.date}"
@@ -458,6 +470,9 @@ class FormAnswers(models.Model):
 
     class Meta:
         db_table = "FormAnswers"
+        indexes = [
+            models.Index(fields=['clave_eds_fk'], name='fa_clave_eds_idx'),
+        ]
 
     def __str__(self):
         return f"WO-{self.work_order.id}: {self.question.question[:30]}..."

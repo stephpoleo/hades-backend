@@ -289,6 +289,14 @@ class FormQuestionsSerializer(serializers.ModelSerializer):
         return instance
 
 
+class FormTemplateMinimalSerializer(serializers.ModelSerializer):
+    """Serializer liviano para usar en listas de WorkOrder (sin campos calculados)."""
+
+    class Meta:
+        model = FormTemplate
+        fields = ["id", "name", "description", "is_active", "is_persistent"]
+
+
 class FormTemplateSerializer(serializers.ModelSerializer):
     questions = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
     assignments_count = serializers.SerializerMethodField()
@@ -304,6 +312,7 @@ class FormTemplateSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
             "is_active",
+            "is_persistent",
             "questions",
             "assignments_count",
             "completed_count",
@@ -667,8 +676,9 @@ class WorkOrderListSerializer(serializers.ModelSerializer):
     Optimizado para usar:
     - Datos batch del contexto (users_map, eds_map)
     - Anotaciones del queryset (_answers_count, _total_questions)
+    - FormTemplateMinimalSerializer (sin campos calculados)
     """
-    form_template = FormTemplateSerializer(read_only=True)
+    form_template = FormTemplateMinimalSerializer(read_only=True)
     user = serializers.SerializerMethodField(read_only=True)
     eds = serializers.SerializerMethodField(read_only=True)
     total_questions = serializers.SerializerMethodField()

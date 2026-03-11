@@ -1233,6 +1233,7 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
                         serializer.is_valid(raise_exception=True)
                         self.perform_create(serializer)
                         results.append(serializer.data)
+                    self._check_persistent_form(work_order_id)
                 status_code = 200 if not errors else 207
                 return Response(
                     {"results": results, "errors": errors}, status=status_code
@@ -1275,6 +1276,7 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
                             save_kwargs[field_name] = val
 
                 obj = serializer.save(**save_kwargs)
+                self._check_persistent_form(work_order_id)
                 return Response(
                     FormAnswersSerializer(obj, context={"request": request}).data,
                     status=200
@@ -1297,6 +1299,7 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
 
                 obj = serializer.save(**save_kwargs)
                 headers = self.get_success_headers(serializer.data)
+                self._check_persistent_form(work_order_id)
                 return Response(
                     FormAnswersSerializer(obj, context={"request": request}).data,
                     status=201,
@@ -1316,6 +1319,44 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer, **kwargs):
         serializer.save(**kwargs)
+
+    def _check_persistent_form(self, work_order_id):
+        """Si el formulario es persistente y está completo, crea un nuevo WorkOrder pendiente."""
+        if not work_order_id:
+            return
+        try:
+            wo = WorkOrder.objects.select_related('form_template').get(id=work_order_id)
+        except WorkOrder.DoesNotExist:
+            return
+        if not wo.form_template.is_persistent:
+            return
+        total_q = wo.form_template.questions.count()
+        if total_q == 0:
+            return
+        total_a = FormAnswers.objects.filter(
+            work_order_id=work_order_id,
+            answer__isnull=False
+        ).exclude(answer='').count()
+        if total_a < total_q:
+            return  # aún no está completo
+        # Verificar si ya existe un WorkOrder pendiente (sin respuestas) para este user/eds/template
+        has_pending = WorkOrder.objects.filter(
+            user_id=wo.user_id,
+            clave_eds=wo.clave_eds,
+            form_template=wo.form_template,
+        ).exclude(id=wo.id).annotate(
+            ans_count=Count('formanswers', filter=Q(
+                formanswers__answer__isnull=False
+            ) & ~Q(formanswers__answer=''))
+        ).filter(ans_count=0).exists()
+        if not has_pending:
+            WorkOrder.objects.create(
+                user_id=wo.user_id,
+                clave_eds=wo.clave_eds,
+                form_template=wo.form_template,
+                date=timezone.now(),
+                work_area_id=wo.work_area_id,
+            )
 
     def _download_attachment(self, image_field, logger):
         """

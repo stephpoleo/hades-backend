@@ -124,12 +124,13 @@ class TestDataMixin:
         user.save()
         return user
 
-    def create_form_template(self, name="Test Form", description="Test Description", is_active=True):
+    def create_form_template(self, name="Test Form", description="Test Description", is_active=True, is_persistent=False):
         """Crea una plantilla de formulario de prueba"""
         return FormTemplate.objects.create(
             name=name,
             description=description,
-            is_active=is_active
+            is_active=is_active,
+            is_persistent=is_persistent,
         )
 
     def create_question(self, form_template, question="Test Question?", qtype="text", order=1, **kwargs):
@@ -2189,3 +2190,110 @@ class DeleteDuplicatesTests(APITestCase, TestDataMixin):
             work_order=self.work_order
         ).first()
         self.assertEqual(remaining.answer, "Tercera")
+
+
+# =============================================================================
+# PERSISTENT FORM TESTS
+# =============================================================================
+
+class PersistentFormTests(TestDataMixin, APITestCase):
+    """Tests para formularios persistentes (is_persistent)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = self.create_user(name="Persistent User", email="persistent@example.com")
+        self.client.force_authenticate(user=self.user)
+
+    def test_is_persistent_field_default_false(self):
+        """is_persistent es False por defecto al crear FormTemplate."""
+        template = self.create_form_template(name="Default Template")
+        self.assertFalse(template.is_persistent)
+
+    def test_serializer_includes_is_persistent(self):
+        """FormTemplateSerializer incluye el campo is_persistent."""
+        template = self.create_form_template(name="Serializer Test", is_persistent=True)
+        serializer = FormTemplateSerializer(template)
+        self.assertIn('is_persistent', serializer.data)
+        self.assertTrue(serializer.data['is_persistent'])
+
+    def test_persistent_form_creates_new_workorder_on_completion(self):
+        """Al guardar la última respuesta de un form persistente, se crea un nuevo WorkOrder pendiente."""
+        template = self.create_form_template(name="Persistent Form", is_persistent=True)
+        question = self.create_question(template, question="¿Pregunta única?", order=1)
+        work_order = self.create_work_order(self.user, template)
+
+        initial_count = WorkOrder.objects.filter(
+            user_id=self.user.id_usr_pk,
+            form_template=template,
+        ).count()
+        self.assertEqual(initial_count, 1)
+
+        response = self.client.post('/api/form-answers/', {
+            'question_id': question.id,
+            'work_order_id': work_order.id,
+            'answer': 'Respuesta',
+        })
+        self.assertIn(response.status_code, [200, 201])
+
+        final_count = WorkOrder.objects.filter(
+            user_id=self.user.id_usr_pk,
+            form_template=template,
+        ).count()
+        self.assertEqual(final_count, 2)
+
+    def test_non_persistent_form_no_new_workorder(self):
+        """Al completar un form NO persistente, NO se crea un WorkOrder adicional."""
+        template = self.create_form_template(name="Non-Persistent Form", is_persistent=False)
+        question = self.create_question(template, question="¿Pregunta?", order=1)
+        work_order = self.create_work_order(self.user, template)
+
+        response = self.client.post('/api/form-answers/', {
+            'question_id': question.id,
+            'work_order_id': work_order.id,
+            'answer': 'Respuesta',
+        })
+        self.assertIn(response.status_code, [200, 201])
+
+        count = WorkOrder.objects.filter(
+            user_id=self.user.id_usr_pk,
+            form_template=template,
+        ).count()
+        self.assertEqual(count, 1)
+
+    def test_persistent_form_no_duplicate_pending_workorder(self):
+        """Si ya existe un WorkOrder pendiente, no se crea uno duplicado."""
+        template = self.create_form_template(name="No Duplicate Form", is_persistent=True)
+        question = self.create_question(template, question="¿Pregunta?", order=1)
+        work_order = self.create_work_order(self.user, template)
+        # WorkOrder pendiente ya existente (sin respuestas)
+        self.create_work_order(self.user, template)
+
+        response = self.client.post('/api/form-answers/', {
+            'question_id': question.id,
+            'work_order_id': work_order.id,
+            'answer': 'Respuesta',
+        })
+        self.assertIn(response.status_code, [200, 201])
+
+        # Debe seguir habiendo solo 2 (el original + el preexistente pendiente, sin crear uno más)
+        count = WorkOrder.objects.filter(
+            user_id=self.user.id_usr_pk,
+            form_template=template,
+        ).count()
+        self.assertEqual(count, 2)
+
+    def test_persistent_completed_stays_completed(self):
+        """El WorkOrder original completo mantiene completion_status 'completed' tras crear el nuevo."""
+        template = self.create_form_template(name="Stays Completed Form", is_persistent=True)
+        question = self.create_question(template, question="¿Pregunta?", order=1)
+        work_order = self.create_work_order(self.user, template)
+
+        self.client.post('/api/form-answers/', {
+            'question_id': question.id,
+            'work_order_id': work_order.id,
+            'answer': 'Respuesta',
+        })
+
+        # completion_status es calculado por el serializer
+        serializer = WorkOrderSerializer(work_order)
+        self.assertEqual(serializer.data.get('completion_status'), 'completed')

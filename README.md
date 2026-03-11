@@ -978,3 +978,30 @@ Este proyecto pertenece a NatGas.
 - `make test-coverage` - Tests con reporte de cobertura HTML
 - `make test-module M=X` - Tests de un modulo especifico
 - `make deploy` - Ejecuta tests y despliega a Cloud Run
+
+---
+
+### Formularios Persistentes
+
+#### Nuevo campo `is_persistent` en FormTemplate
+- Campo `BooleanField(default=False)` agregado al modelo `FormTemplate`
+- Migración `0010_formtemplate_is_persistent_and_more` aplicada en producción
+- Expuesto en `FormTemplateSerializer` como campo de lectura/escritura
+
+#### Lógica de reaparición automática (WorkOrder)
+- Nuevo método `_check_persistent_form(work_order_id)` en `FormAnswersViewSet`
+- Se ejecuta al guardar cualquier respuesta (POST `/api/form-answers/`) tanto en batch como en objeto único
+- Si el formulario tiene `is_persistent=True` y todas las preguntas fueron respondidas, crea automáticamente un nuevo `WorkOrder` pendiente para el mismo usuario/EDS/template
+- Evita duplicados: verifica si ya existe un WorkOrder sin respuestas antes de crear uno nuevo
+- El WorkOrder original queda con `completion_status: completed`; el nuevo aparece como `pending`
+
+#### Fix de rendimiento: FormTemplateMinimalSerializer
+- Se agregó `FormTemplateMinimalSerializer` (campos: `id`, `name`, `description`, `is_active`, `is_persistent`) sin campos calculados
+- `WorkOrderListSerializer` ahora usa este serializer en lugar de `FormTemplateSerializer` completo
+- Elimina N+1 de ~4-6 queries extra por WorkOrder (`assignments_count`, `completed_count`, `assigned_users`)
+- Reduce tiempo de respuesta de `GET /api/work-orders/?user_id=X` de ~32s a <2s
+
+#### Tests
+- Nueva clase `PersistentFormTests` con 6 casos: campo default, serializer, creación de WO al completar, no creación en form no persistente, sin duplicados, WO original sigue completado
+- `TestDataMixin.create_form_template()` acepta parámetro `is_persistent=False`
+- **101 tests** totales pasando
