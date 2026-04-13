@@ -12,6 +12,7 @@ from django.contrib.auth import authenticate, login, logout
 from django.http import JsonResponse, HttpResponse
 from google.cloud import storage
 from rest_framework.permissions import IsAuthenticated
+from .permissions import IsAdminRole, IsAdminOrSupervisor, IsEmployeeOrAdmin
 from rest_framework.decorators import api_view, permission_classes, action, authentication_classes
 from rest_framework.authentication import TokenAuthentication
 from rest_framework import status, viewsets
@@ -136,6 +137,11 @@ class EDSViewSet(viewsets.ModelViewSet):
     queryset = EDS.objects.all()
     serializer_class = EDSSerializer
     pagination_class = LargePagination
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [IsAuthenticated()]
+        return [IsAdminRole()]
 
     def get_pagination_class(self):
         """Permite desactivar paginación con ?no_pagination=true para dropdowns"""
@@ -387,6 +393,10 @@ class UsersViewSet(viewsets.ModelViewSet):
     queryset = Users.objects.all()
     serializer_class = UsersSerializer
     pagination_class = LargePagination
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [IsAdminOrSupervisor()]
+        return [IsAdminRole()]
 
     def get_pagination_class(self):
         """Permite desactivar paginación con ?no_pagination=true para dropdowns"""
@@ -687,6 +697,11 @@ class FormTemplateViewSet(viewsets.ModelViewSet):
     serializer_class = FormTemplateSerializer
     pagination_class = StandardPagination  # Paginación estándar para formularios
 
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [IsEmployeeOrAdmin()]
+        return [IsAdminRole()]
+
     @action(detail=False, methods=["delete"], url_path="clear-all")
     def clear_all(self, request):
         """Elimina todas las plantillas, preguntas, ordenes de trabajo y respuestas asociadas."""
@@ -718,6 +733,14 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
     queryset = WorkOrder.objects.all()
     serializer_class = WorkOrderSerializer
     pagination_class = StandardPagination
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [IsAuthenticated()]
+        if self.action == "partial_update":
+            # Empleados actualizan sus WOs al llenar formularios (start/end_date_time, clave_eds)
+            return [IsAuthenticated()]
+        return [IsAdminRole()]
 
     def get_serializer_class(self):
         # Use lightweight serializer for list to avoid timeout
@@ -805,6 +828,32 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
             logger.exception("Error GET /api/work-orders/")
             return Response({"detail": str(exc)}, status=500)
 
+    def create(self, request, *args, **kwargs):
+        """Crea un WorkOrder. Si ya existe uno sin respuestas para el mismo
+        user_id/clave_eds/form_template_id, lo devuelve en lugar de crear duplicado."""
+        from django.db.models import Count as _Count
+        user_id = request.data.get("user_id")
+        clave_eds = request.data.get("clave_eds") or request.data.get("eds_id")
+        form_template_id = request.data.get("form_template_id")
+
+        if user_id and form_template_id:
+            existing = (
+                WorkOrder.objects.filter(
+                    user_id=user_id,
+                    clave_eds=clave_eds,
+                    form_template_id=form_template_id,
+                )
+                .annotate(_ans=_Count("formanswers"))
+                .filter(_ans=0)
+                .order_by("-id")
+                .first()
+            )
+            if existing:
+                serializer = self.get_serializer(existing)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+
+        return super().create(request, *args, **kwargs)
+
     # Aseguramos que kwargs (ej. image) lleguen al .save()
     def perform_create(self, serializer, **kwargs):
         serializer.save(**kwargs)
@@ -831,6 +880,12 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
         - start_date: fecha inicio (YYYY-MM-DD)
         - end_date: fecha fin (YYYY-MM-DD)
         """
+        # distinct=True es obligatorio en ambos Count para evitar el producto
+        # cartesiano que genera el JOIN simultáneo de formanswers y
+        # form_template__questions. Sin distinct, los conteos se inflan por el
+        # factor N×M, haciendo que cualquier WO con al menos 1 respuesta
+        # guardada aparezca como "completed" aunque no estén todas las preguntas
+        # contestadas — esto bloqueaba la creación del WO persistente.
         queryset = WorkOrder.objects.select_related(
             'form_template'
         ).prefetch_related(
@@ -838,9 +893,10 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
         ).annotate(
             _answers_count=Count(
                 'formanswers',
-                filter=~Q(formanswers__answer__isnull=True) & ~Q(formanswers__answer__exact='')
+                filter=~Q(formanswers__answer__isnull=True) & ~Q(formanswers__answer__exact=''),
+                distinct=True,
             ),
-            _total_questions=Count('form_template__questions')
+            _total_questions=Count('form_template__questions', distinct=True)
         )
 
         # Filtros opcionales
@@ -868,10 +924,10 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
         # Filtro por nombre de EDS (búsqueda parcial)
         eds_name = self.request.query_params.get("eds_name")
         if eds_name:
-            # Necesitamos hacer join con EDS para filtrar por nombre
-            eds_claves = EDS.objects.filter(
+            # list() fuerza evaluación en la BD 'eds' (vía router) antes de filtrar en 'default'
+            eds_claves = list(EDS.objects.filter(
                 name__icontains=eds_name
-            ).values_list('clave_eds', flat=True)
+            ).values_list('id_eds_pk', flat=True))
             queryset = queryset.filter(clave_eds__in=eds_claves)
 
         # Filtro por estado de completación (basado en anotaciones)
@@ -905,14 +961,16 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
         search = self.request.query_params.get("search")
         if search:
             # Buscar en nombre de usuario
-            user_ids = Users.objects.filter(
+            # list() fuerza evaluación en la BD correcta antes de usar como subquery en 'default'
+            user_ids = list(Users.objects.filter(
                 name__icontains=search
-            ).values_list('id_usr_pk', flat=True)
+            ).values_list('id_usr_pk', flat=True))
 
             # Buscar en nombre de EDS
-            eds_claves = EDS.objects.filter(
+            # list() fuerza evaluación en la BD 'eds' (vía router) antes de filtrar en 'default'
+            eds_claves = list(EDS.objects.filter(
                 name__icontains=search
-            ).values_list('clave_eds', flat=True)
+            ).values_list('id_eds_pk', flat=True))
 
             # Buscar en nombre de formulario o combinar con usuarios/EDS
             queryset = queryset.filter(
@@ -923,25 +981,125 @@ class WorkOrderViewSet(viewsets.ModelViewSet):
             )
 
         # Filtro por rango de fechas
+        # Usa end_date_time (fecha de finalización) si está disponible, sino date (fecha de creación).
+        # Esto coincide con la fecha que se muestra en el frontend (end_date_time || date).
         start_date = self.request.query_params.get("start_date")
-        if start_date:
-            from datetime import datetime
-            try:
-                start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
-                queryset = queryset.filter(date__gte=start_date_obj)
-            except ValueError:
-                pass
-
         end_date = self.request.query_params.get("end_date")
-        if end_date:
+        if start_date or end_date:
             from datetime import datetime
             try:
-                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
-                queryset = queryset.filter(date__lte=end_date_obj)
+                start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
+                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None
+
+                if start_date_obj:
+                    queryset = queryset.filter(
+                        Q(end_date_time__isnull=False, end_date_time__date__gte=start_date_obj) |
+                        Q(end_date_time__isnull=True, date__gte=start_date_obj)
+                    )
+                if end_date_obj:
+                    queryset = queryset.filter(
+                        Q(end_date_time__isnull=False, end_date_time__date__lte=end_date_obj) |
+                        Q(end_date_time__isnull=True, date__lte=end_date_obj)
+                    )
             except ValueError:
                 pass
 
+        # Parámetro para el portal del empleado: devuelve un WO por
+        # (form_template_id, clave_eds), priorizando WOs incompletos sobre
+        # completados. Así formularios persistentes siguen apareciendo como
+        # "pendiente" aunque el WO con ID más alto esté contestado.
+        latest_per_template = self.request.query_params.get('latest_per_template') == 'true'
+        if latest_per_template and user_id:
+            from django.db.models import Max as _Max, Count as _Count, F as _F
+
+            base = WorkOrder.objects.filter(user_id=user_id)
+
+            # Paso 1 — IDs de WOs incompletos (respuestas < requeridas)
+            incomplete_wo_ids = list(
+                base.annotate(
+                    lpt_ans=_Count(
+                        'formanswers',
+                        filter=~Q(formanswers__answer__isnull=True) & ~Q(formanswers__answer__exact=''),
+                        distinct=True,
+                    ),
+                    lpt_req=_Count(
+                        'form_template__questions',
+                        filter=Q(form_template__questions__is_required=True),
+                        distinct=True,
+                    ),
+                )
+                .exclude(lpt_ans__gte=_F('lpt_req'), lpt_req__gt=0)
+                .values_list('id', flat=True)
+            )
+
+            # Paso 2 — De los incompletos, el más reciente por grupo (tab Pendiente/Borrador)
+            incomplete_latest_ids = list(
+                WorkOrder.objects.filter(id__in=incomplete_wo_ids)
+                .values('form_template_id', 'clave_eds')
+                .annotate(latest_id=_Max('id'))
+                .values_list('latest_id', flat=True)
+            )
+
+            # Paso 3 — Todos los WOs completados (tab Completado/historial)
+            # Se incluyen TODOS sin deduplicar: el usuario debe ver cada
+            # formulario que respondió, no solo el más reciente.
+            completed_wo_ids = list(
+                base.annotate(
+                    lpt_ans=_Count(
+                        'formanswers',
+                        filter=~Q(formanswers__answer__isnull=True) & ~Q(formanswers__answer__exact=''),
+                        distinct=True,
+                    ),
+                    lpt_req=_Count(
+                        'form_template__questions',
+                        filter=Q(form_template__questions__is_required=True),
+                        distinct=True,
+                    ),
+                )
+                .filter(lpt_ans__gte=_F('lpt_req'), lpt_req__gt=0)
+                .values_list('id', flat=True)
+            )
+
+            final_ids = list(set(incomplete_latest_ids + list(completed_wo_ids)))
+            queryset = queryset.filter(id__in=final_ids)
+
+        # Ordenamiento configurable via ?ordering=end_date_time (asc) o ?ordering=-end_date_time (desc)
+        ordering = self.request.query_params.get('ordering', '')
+        allowed_orderings = {
+            'end_date_time': ['end_date_time', 'id'],
+            '-end_date_time': ['-end_date_time', '-id'],
+            'date': ['date', 'id'],
+            '-date': ['-date', '-id'],
+        }
+        if ordering in allowed_orderings:
+            return queryset.order_by(*allowed_orderings[ordering])
         return queryset.order_by('-date', '-id')
+
+    @action(detail=False, methods=["delete"], url_path="unassign")
+    def unassign(self, request):
+        """Elimina TODOS los WorkOrders de un usuario para un formulario específico.
+        Necesario para desasignar correctamente cuando hay WOs históricos acumulados
+        (formularios persistentes con múltiples ciclos completados).
+
+        Query params requeridos:
+        - user_id: ID del usuario a desasignar
+        - form_template_id: ID del formulario
+        """
+        user_id = request.query_params.get("user_id")
+        form_template_id = request.query_params.get("form_template_id")
+
+        if not user_id or not form_template_id:
+            return Response(
+                {"detail": "user_id y form_template_id son requeridos"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        deleted_count, _ = WorkOrder.objects.filter(
+            user_id=user_id,
+            form_template_id=form_template_id,
+        ).delete()
+
+        return Response({"deleted": deleted_count}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["delete"], url_path="clear-all")
     def clear_all(self, request):
@@ -978,6 +1136,11 @@ class FormQuestionsViewSet(viewsets.ModelViewSet):
     serializer_class = FormQuestionsSerializer
     pagination_class = None  # Deshabilitar paginación para preguntas
 
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [IsAuthenticated()]
+        return [IsAdminRole()]
+
     def get_queryset(self):
         """Filtra las preguntas por form_template si se proporciona."""
         queryset = FormQuestions.objects.all().order_by("question_order")
@@ -1005,6 +1168,14 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
     pagination_class = None  # Deshabilitar paginación para respuestas
     queryset = FormAnswers.objects.all()
     serializer_class = FormAnswersSerializer
+
+    def get_permissions(self):
+        if self.action == "create":
+            return [IsAuthenticated()]
+        if self.action in ("update", "partial_update", "destroy"):
+            return [IsAdminRole()]
+        # list, retrieve, by_workorder, attachment actions
+        return [IsAdminOrSupervisor()]
 
     def get_queryset(self):
         """
@@ -1321,7 +1492,12 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
         serializer.save(**kwargs)
 
     def _check_persistent_form(self, work_order_id):
-        """Si el formulario es persistente y está completo, crea un nuevo WorkOrder pendiente."""
+        """Si el formulario es persistente y está completo, crea un nuevo WorkOrder pendiente.
+
+        Una respuesta se considera válida si tiene texto no vacío en `answer` O
+        tiene al menos una imagen adjunta (image/image_2/image_3). Esto cubre
+        preguntas tipo 'file' y preguntas con solo evidencia fotográfica.
+        """
         if not work_order_id:
             return
         try:
@@ -1330,24 +1506,48 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
             return
         if not wo.form_template.is_persistent:
             return
-        total_q = wo.form_template.questions.count()
+
+        # Filtro: una respuesta es válida si tiene texto O imagen
+        answered_filter = (
+            (Q(answer__isnull=False) & ~Q(answer='')) |
+            (Q(image__isnull=False) & ~Q(image='')) |
+            (Q(image_2__isnull=False) & ~Q(image_2='')) |
+            (Q(image_3__isnull=False) & ~Q(image_3=''))
+        )
+
+        has_required = wo.form_template.questions.filter(is_required=True).exists()
+        total_q = wo.form_template.questions.filter(is_required=True).count() if has_required else wo.form_template.questions.count()
         if total_q == 0:
             return
-        total_a = FormAnswers.objects.filter(
-            work_order_id=work_order_id,
-            answer__isnull=False
-        ).exclude(answer='').count()
+
+        # Contar solo preguntas requeridas respondidas (o todas si no hay requeridas)
+        required_q_ids = list(
+            wo.form_template.questions.filter(is_required=True).values_list('id', flat=True)
+        ) if has_required else None
+
+        answers_qs = FormAnswers.objects.filter(work_order_id=work_order_id).filter(answered_filter)
+        if required_q_ids is not None:
+            answers_qs = answers_qs.filter(question_id__in=required_q_ids)
+        total_a = answers_qs.count()
+
         if total_a < total_q:
-            return  # aún no está completo
-        # Verificar si ya existe un WorkOrder pendiente (sin respuestas) para este user/eds/template
+            return  # aún no están respondidas todas las preguntas obligatorias
+
+        # Filtro equivalente para el annotate de has_pending (misma lógica de respuesta válida)
+        pending_answered_filter = (
+            (Q(formanswers__answer__isnull=False) & ~Q(formanswers__answer='')) |
+            (Q(formanswers__image__isnull=False) & ~Q(formanswers__image='')) |
+            (Q(formanswers__image_2__isnull=False) & ~Q(formanswers__image_2='')) |
+            (Q(formanswers__image_3__isnull=False) & ~Q(formanswers__image_3=''))
+        )
+
+        # Verificar si ya existe un WorkOrder sin respuestas válidas para este user/eds/template
         has_pending = WorkOrder.objects.filter(
             user_id=wo.user_id,
             clave_eds=wo.clave_eds,
             form_template=wo.form_template,
         ).exclude(id=wo.id).annotate(
-            ans_count=Count('formanswers', filter=Q(
-                formanswers__answer__isnull=False
-            ) & ~Q(formanswers__answer=''))
+            ans_count=Count('formanswers', filter=pending_answered_filter)
         ).filter(ans_count=0).exists()
         if not has_pending:
             WorkOrder.objects.create(
@@ -1463,6 +1663,7 @@ class FormAnswersViewSet(viewsets.ModelViewSet):
 
 
 @api_view(["DELETE"])
+@permission_classes([IsAdminRole])
 def clear_form_templates(request):
     """
     Endpoint directo para borrar todas las plantillas, preguntas, work orders y respuestas.
@@ -1490,6 +1691,7 @@ def clear_form_templates(request):
 
 
 @api_view(["DELETE"])
+@permission_classes([IsAdminRole])
 def clear_work_orders(request):
     """
     Endpoint directo para borrar todas las work orders y sus respuestas.
@@ -1520,6 +1722,7 @@ class RolesViewSet(viewsets.ModelViewSet):
     queryset = Roles.objects.all()
     serializer_class = RolesSerializer
     pagination_class = None  # Deshabilitar paginación para roles
+    permission_classes = [IsAdminRole]
 
     def create(self, request, *args, **kwargs):
         try:
@@ -1559,6 +1762,7 @@ class PermissionsViewSet(viewsets.ModelViewSet):
     queryset = Permissions.objects.all()
     serializer_class = PermissionsSerializer
     pagination_class = None  # Deshabilitar paginación para permisos
+    permission_classes = [IsAdminRole]
 
     def create(self, request, *args, **kwargs):
         try:
@@ -1595,6 +1799,7 @@ class PermissionsViewSet(viewsets.ModelViewSet):
 
 # Dashboard KPI endpoint
 @api_view(["GET"])
+@permission_classes([IsAdminOrSupervisor])
 def dashboard_kpis(request):
     """
     Endpoint para obtener los KPIs del dashboard de cumplimiento.
