@@ -1,6 +1,17 @@
 # Deploy script for Hades Backend to Cloud Run
 # This script ensures all environment variables are preserved during deploy
 # IMPORTANT: Runs tests before deploying - deploy is aborted if any test fails
+#
+# Options:
+#   -SkipTests    Skip all tests (use when tests were already run locally)
+#
+# Examples:
+#   .\deploy.ps1             # Run tests then deploy
+#   .\deploy.ps1 -SkipTests  # Skip tests and deploy directly
+
+param(
+    [switch]$SkipTests = $false
+)
 
 $PROJECT_ID = "hades-backend-prod"
 $REGION = "us-central1"
@@ -9,40 +20,45 @@ $SERVICE_NAME = "hades-backend"
 # =============================================================================
 # STEP 1: Run Unit Tests
 # =============================================================================
-Write-Host ""
-Write-Host "=============================================" -ForegroundColor Cyan
-Write-Host "  STEP 1: Running Unit Tests" -ForegroundColor Cyan
-Write-Host "=============================================" -ForegroundColor Cyan
-Write-Host ""
-
-# Activate virtual environment and run tests
-$venvPython = ".\venv\Scripts\python.exe"
-
-if (-Not (Test-Path $venvPython)) {
-    Write-Host "ERROR: Virtual environment not found at $venvPython" -ForegroundColor Red
-    Write-Host "Please create the virtual environment first: python -m venv venv" -ForegroundColor Yellow
-    exit 1
-}
-
-Write-Host "Running tests with Django test runner..." -ForegroundColor Yellow
-& $venvPython manage.py test hades_app.tests --verbosity=1
-
-if ($LASTEXITCODE -ne 0) {
+if ($SkipTests) {
     Write-Host ""
-    Write-Host "=============================================" -ForegroundColor Red
-    Write-Host "  TESTS FAILED - DEPLOY ABORTED" -ForegroundColor Red
-    Write-Host "=============================================" -ForegroundColor Red
+    Write-Host "[WARNING] Skipping tests - NOT RECOMMENDED for production!" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "Fix the failing tests before deploying to production." -ForegroundColor Yellow
-    Write-Host "Run 'python manage.py test hades_app.tests -v 2' for more details." -ForegroundColor Yellow
-    exit 1
-}
+} else {
+    Write-Host ""
+    Write-Host "=============================================" -ForegroundColor Cyan
+    Write-Host "  STEP 1: Running Unit Tests" -ForegroundColor Cyan
+    Write-Host "=============================================" -ForegroundColor Cyan
+    Write-Host ""
 
-Write-Host ""
-Write-Host "=============================================" -ForegroundColor Green
-Write-Host "  ALL TESTS PASSED" -ForegroundColor Green
-Write-Host "=============================================" -ForegroundColor Green
-Write-Host ""
+    $venvPython = ".\venv\Scripts\python.exe"
+
+    if (-Not (Test-Path $venvPython)) {
+        Write-Host "ERROR: Virtual environment not found at $venvPython" -ForegroundColor Red
+        Write-Host "Please create the virtual environment first: python -m venv venv" -ForegroundColor Yellow
+        exit 1
+    }
+
+    Write-Host "Running tests with Django test runner..." -ForegroundColor Yellow
+    & $venvPython manage.py test hades_app.tests --verbosity=1
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        Write-Host "=============================================" -ForegroundColor Red
+        Write-Host "  TESTS FAILED - DEPLOY ABORTED" -ForegroundColor Red
+        Write-Host "=============================================" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "Fix the failing tests before deploying to production." -ForegroundColor Yellow
+        Write-Host "Run 'python manage.py test hades_app.tests -v 2' for more details." -ForegroundColor Yellow
+        exit 1
+    }
+
+    Write-Host ""
+    Write-Host "=============================================" -ForegroundColor Green
+    Write-Host "  ALL TESTS PASSED" -ForegroundColor Green
+    Write-Host "=============================================" -ForegroundColor Green
+    Write-Host ""
+}
 
 # =============================================================================
 # STEP 2: Deploy to Cloud Run
