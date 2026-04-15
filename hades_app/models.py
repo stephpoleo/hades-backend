@@ -283,6 +283,8 @@ class Users(AbstractBaseUser, PermissionsMixin):
             return "Empleado"
         elif self.id_role_fk == 2:
             return "Administrador"
+        elif self.id_role_fk == 3:
+            return "Supervisor"
         else:
             return "Sin rol"
 

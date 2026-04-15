@@ -82,7 +82,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase, APIClient
 from rest_framework import status
 
-from .models import (
+from hades_app.models import (
     Users,
     EDS,
     FormTemplate,
@@ -92,7 +92,7 @@ from .models import (
     Roles,
     Permissions,
 )
-from .serializers import (
+from hades_app.serializers import (
     UsersSerializer,
     EDSSerializer,
     FormTemplateSerializer,
@@ -113,7 +113,9 @@ class TestDataMixin:
     """Mixin con metodos para crear datos de prueba"""
 
     def create_user(self, name="Test User", email="test@example.com", password="testpass123", **kwargs):
-        """Crea un usuario de prueba"""
+        """Crea un usuario de prueba. Si is_staff=True se asigna rol de Administrador (id_role_fk=2)."""
+        if kwargs.get("is_staff") and "id_role_fk" not in kwargs:
+            kwargs["id_role_fk"] = 2
         user = Users.objects.create(
             name=name,
             email=email,
@@ -489,7 +491,7 @@ class FormTemplateTests(APITestCase, TestDataMixin):
         q1 = self.create_question(template, "Pregunta 1?", order=1)
         q2 = self.create_question(template, "Pregunta 2?", order=2)
 
-        user = self.create_user(email="worker@test.com")
+        user = self.create_user(email="worker@test.com", is_staff=True)
 
         # Crear orden completada (2 respuestas para 2 preguntas)
         wo_complete = self.create_work_order(user, template)
@@ -519,7 +521,7 @@ class WorkOrderTests(APITestCase, TestDataMixin):
     """
 
     def setUp(self):
-        self.user = self.create_user(email="worker@test.com")
+        self.user = self.create_user(email="worker@test.com", is_staff=True)
         self.template = self.create_form_template()
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
@@ -813,7 +815,7 @@ class FormAnswersTests(APITestCase, TestDataMixin):
     """
 
     def setUp(self):
-        self.user = self.create_user(email="worker@test.com")
+        self.user = self.create_user(email="worker@test.com", is_staff=True)
         self.template = self.create_form_template()
         self.question = self.create_question(self.template, "Test Q?", order=1)
         self.work_order = self.create_work_order(self.user, self.template)
@@ -1122,7 +1124,7 @@ class AnswerValidationTests(TestCase, TestDataMixin):
         wo = self.create_work_order(self.user, self.template)
         answer = self.create_answer(question, wo, "true")
 
-        from .views import _is_answer_correct
+        from hades_app.views import _is_answer_correct
         self.assertTrue(_is_answer_correct(question, answer))
 
     def test_boolean_answer_si_is_correct(self):
@@ -1133,7 +1135,7 @@ class AnswerValidationTests(TestCase, TestDataMixin):
         wo = self.create_work_order(self.user, self.template)
         answer = self.create_answer(question, wo, "si")
 
-        from .views import _is_answer_correct
+        from hades_app.views import _is_answer_correct
         self.assertTrue(_is_answer_correct(question, answer))
 
     def test_boolean_answer_false_is_incorrect(self):
@@ -1144,7 +1146,7 @@ class AnswerValidationTests(TestCase, TestDataMixin):
         wo = self.create_work_order(self.user, self.template)
         answer = self.create_answer(question, wo, "false")
 
-        from .views import _is_answer_correct
+        from hades_app.views import _is_answer_correct
         self.assertFalse(_is_answer_correct(question, answer))
 
     def test_percent_answer_100_is_correct(self):
@@ -1155,7 +1157,7 @@ class AnswerValidationTests(TestCase, TestDataMixin):
         wo = self.create_work_order(self.user, self.template)
         answer = self.create_answer(question, wo, "100")
 
-        from .views import _is_answer_correct
+        from hades_app.views import _is_answer_correct
         self.assertTrue(_is_answer_correct(question, answer))
 
     def test_percent_answer_below_100_is_incorrect(self):
@@ -1166,7 +1168,7 @@ class AnswerValidationTests(TestCase, TestDataMixin):
         wo = self.create_work_order(self.user, self.template)
         answer = self.create_answer(question, wo, "80")
 
-        from .views import _is_answer_correct
+        from hades_app.views import _is_answer_correct
         self.assertFalse(_is_answer_correct(question, answer))
 
     def test_answer_with_expected_value(self):
@@ -1184,7 +1186,7 @@ class AnswerValidationTests(TestCase, TestDataMixin):
 
         # Respuesta >= expected_value es correcta
         answer_correct = self.create_answer(question, wo, "95")
-        from .views import _is_answer_correct
+        from hades_app.views import _is_answer_correct
         self.assertTrue(_is_answer_correct(question, answer_correct))
 
         # Respuesta < expected_value es incorrecta
@@ -1900,7 +1902,7 @@ class AttachmentEndpointsTests(APITestCase, TestDataMixin):
     """
 
     def setUp(self):
-        self.user = self.create_user(email="worker@test.com")
+        self.user = self.create_user(email="worker@test.com", is_staff=True)
         self.template = self.create_form_template()
         self.question = self.create_question(self.template, "Test Q?", order=1)
         self.work_order = self.create_work_order(self.user, self.template)
@@ -2003,8 +2005,8 @@ class PaginationClassTests(APITestCase, TestDataMixin):
         FLUJO: EDSViewSet esta configurado con LargePagination
         Verifica la configuracion del ViewSet sin hacer request
         """
-        from .views import EDSViewSet
-        from .pagination import LargePagination
+        from hades_app.views import EDSViewSet
+        from hades_app.pagination import LargePagination
 
         self.assertEqual(EDSViewSet.pagination_class, LargePagination)
 
@@ -2012,8 +2014,8 @@ class PaginationClassTests(APITestCase, TestDataMixin):
         """
         FLUJO: UsersViewSet esta configurado con LargePagination
         """
-        from .views import UsersViewSet
-        from .pagination import LargePagination
+        from hades_app.views import UsersViewSet
+        from hades_app.pagination import LargePagination
 
         self.assertEqual(UsersViewSet.pagination_class, LargePagination)
 
@@ -2048,7 +2050,7 @@ class FormAnswersFilterTests(APITestCase, TestDataMixin):
     """
 
     def setUp(self):
-        self.user = self.create_user(email="worker@test.com")
+        self.user = self.create_user(email="worker@test.com", is_staff=True)
         self.template = self.create_form_template()
         self.question = self.create_question(self.template, "Test Q?", order=1)
         self.work_order = self.create_work_order(self.user, self.template)
@@ -2201,7 +2203,7 @@ class PersistentFormTests(TestDataMixin, APITestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.user = self.create_user(name="Persistent User", email="persistent@example.com")
+        self.user = self.create_user(name="Persistent User", email="persistent@example.com", is_staff=True)
         self.client.force_authenticate(user=self.user)
 
     def test_is_persistent_field_default_false(self):
