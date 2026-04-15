@@ -620,6 +620,7 @@ La API y dashboard están disponibles en:
 - **API EDS:** `http://localhost:8000/api/eds/` - JSON con estaciones de servicio
 - **API Dashboard KPIs:** `http://localhost:8000/api/dashboard/kpis/` - Métricas de cumplimiento
 - **API Completa:** `http://localhost:8000/api/dashboard/` - JSON con todos los datos
+- **Desasignar usuario:** `DELETE /api/work-orders/unassign/?user_id=X&form_template_id=Y` - Elimina todos los WOs históricos de un usuario para un formulario
 
 ### Documentaci¢n Swagger/Redoc
 
@@ -1005,3 +1006,167 @@ Este proyecto pertenece a NatGas.
 - Nueva clase `PersistentFormTests` con 6 casos: campo default, serializer, creación de WO al completar, no creación en form no persistente, sin duplicados, WO original sigue completado
 - `TestDataMixin.create_form_template()` acepta parámetro `is_persistent=False`
 - **101 tests** totales pasando
+
+---
+
+### Sistema de Permisos por Rol
+
+#### Roles del sistema
+
+| ID | Nombre | Descripción |
+|----|--------|-------------|
+| 1 | Empleado | Portal móvil — envía formularios y ve sus propias work orders |
+| 2 | Administrador | Acceso total a todos los recursos |
+| 3 | Supervisor | Dashboard KPIs, respuestas y preguntas de formularios (read-only), puede contestar WOs asignadas |
+
+#### Clases de permisos (`hades_app/permissions.py`)
+
+Nuevo módulo con tres clases de permisos personalizadas:
+
+- **`IsAdminRole`** — solo Administradores (rol 2) y superusers
+- **`IsAdminOrSupervisor`** — Administradores (rol 2) y Supervisores (rol 3), y superusers
+- **`IsEmployeeOrAdmin`** — Empleados (rol 1) y Administradores (rol 2), y superusers
+
+#### Matriz de permisos por endpoint
+
+| Endpoint | GET / lectura | POST / escritura | PUT / PATCH / DELETE |
+|----------|--------------|-----------------|----------------------|
+| `GET /api/eds/` | `IsEmployeeOrAdmin` | `IsAdminRole` | `IsAdminRole` |
+| `GET /api/users/` | `IsAdminRole` | `IsAdminRole` | `IsAdminRole` |
+| `GET /api/form-templates/` | `IsEmployeeOrAdmin` | `IsAdminRole` | `IsAdminRole` |
+| `GET /api/work-orders/` | `IsEmployeeOrAdmin` | `IsAdminRole` | `IsAdminRole` |
+| `GET /api/form-questions/` | `IsAuthenticated` | `IsAdminRole` | `IsAdminRole` |
+| `GET /api/form-answers/` | `IsAdminOrSupervisor` | `IsEmployeeOrAdmin` | `IsAdminRole` |
+| `GET /api/dashboard/kpis/` | `IsAdminOrSupervisor` | — | — |
+| `DELETE /api/form-templates/clear-all/` | — | `IsAdminRole` | — |
+| `DELETE /api/clear-work-orders/` | — | `IsAdminRole` | — |
+| `/api/roles/` | `IsAdminRole` | `IsAdminRole` | `IsAdminRole` |
+| `/api/permissions/` | `IsAdminRole` | `IsAdminRole` | `IsAdminRole` |
+
+#### Migración de datos
+
+- **`0011_add_supervisor_role`** — inserta el rol Supervisor (id=3) en la tabla `Roles` si no existe (usa `get_or_create`, sin riesgo para datos existentes)
+
+#### Tests de permisos (`hades_app/tests/test_permissions.py`)
+
+Suite dedicada con **33 tests** cubriendo los 4 casos:
+
+- `SupervisorPermissionsTest` — 11 tests (puede: dashboard, respuestas, preguntas de formulario, contestar WOs; no puede: crear/eliminar, gestionar usuarios, plantillas)
+- `AdminPermissionsTest` — 8 tests (acceso total verificado)
+- `EmployeePermissionsTest` — 10 tests (puede: formularios, WO propias, EDS; no puede: dashboard, respuestas, usuarios)
+- `UnauthenticatedPermissionsTest` — 6 tests (401/403 en todos los endpoints)
+
+---
+
+### Fix: Supervisor puede ver detalles de formulario (view details)
+
+#### Problema
+Al hacer clic en "View details" en la sección de respuestas como Supervisor, la consola del navegador arrojaba `403 Forbidden` al llamar `GET /api/form-questions/?form_template=X`.
+
+#### Causa
+`FormQuestionsViewSet` GET usaba `IsEmployeeOrAdmin` (roles 1 y 2), excluyendo Supervisores (rol 3).
+
+#### Fix
+Permiso GET de `FormQuestionsViewSet` cambiado de `IsEmployeeOrAdmin` a `IsAuthenticated`.
+Escritura (`POST`, `PUT`, `PATCH`, `DELETE`) sigue restringida a `IsAdminRole`.
+
+#### Tests agregados
+- `test_supervisor_can_list_form_questions` en `SupervisorPermissionsTest`
+- `test_unauthenticated_cannot_access_form_questions` en `UnauthenticatedPermissionsTest`
+
+---
+
+### Acceso al Portal para Supervisores + "Mi portal"
+
+#### Cambios de permisos (backend)
+
+- `FormAnswersViewSet.create` ahora usa `IsAuthenticated` en lugar de `IsEmployeeOrAdmin`
+- Supervisores pueden POST a `/api/form-answers/` y contestar formularios asignados
+- Test `test_supervisor_can_create_form_answer` actualizado para reflejar el nuevo comportamiento
+
+#### Cambios de navegación (frontend)
+
+| Elemento | Antes | Después |
+|----------|-------|---------|
+| Botón header portal formularios | "Portal Empleado" | "Mi portal" |
+| Botón header portal admin (Supervisor) | Oculto | "Portal supervisor" |
+| Título sidebar (Supervisor) | "Portal del administrador" | "Portal del supervisor" |
+| Título en employee-portal | "Portal del empleado" | "Mi portal" |
+| Ruta `/employee-portal` roles permitidos | Empleado, Administrador | Empleado, Administrador, Supervisor |
+
+- `showEmployeeButton()` — visible para todos los usuarios autenticados
+- `showAdminButton()` — visible para Admin y Supervisor (botón de regreso)
+- `getSidebarTitle()` / `getAdminPortalLabel()` — títulos dinámicos por rol
+
+---
+
+### Fix: Asignación masiva — WorkOrders duplicados
+
+#### Problema
+Al asignar masivamente un formulario repetidas veces (workaround usado cuando usuarios reportaban que no les aparecía el form), se acumulaban múltiples WorkOrders vacíos por usuario/EDS/template. Esto causaba que `_check_persistent_form` viera un WO pendiente existente y nunca creara el nuevo ciclo.
+
+#### Limpieza de datos
+- Se eliminaron 4,418 WorkOrders duplicados y vacíos acumulados el 5 de abril
+- Se restauraron 182 WorkOrders pendientes faltantes para usuarios afectados
+
+#### Fix de código (`WorkOrderViewSet.create`)
+Se agregó override de `create` en `WorkOrderViewSet` que verifica si ya existe un WO sin respuestas para la misma combinación `user_id / clave_eds / form_template_id`. Si existe, lo devuelve en lugar de crear un duplicado.
+
+```python
+def create(self, request, *args, **kwargs):
+    """Si ya existe un WO sin respuestas para user/eds/template, lo retorna en lugar de crear duplicado."""
+    existing = WorkOrder.objects.filter(...).annotate(_ans=Count("formanswers")).filter(_ans=0).first()
+    if existing:
+        return Response(serializer.data, status=HTTP_200_OK)
+    return super().create(request, *args, **kwargs)
+```
+
+---
+
+### Fix: Supervisor puede cambiar EDS en el portal de formularios
+
+#### Problema
+Al contestar un formulario como Supervisor, el dropdown de selección de EDS no aparecía (era exclusivo de Administradores).
+
+#### Fix (`form-viewer.component.ts`)
+La lógica de `setAdminFlag()` ahora incluye el rol Supervisor tanto por nombre (`'supervisor'`) como por ID numérico (`3`):
+
+```typescript
+if (['administrador', 'admin', 'administrator', 'supervisor'].includes(normalizedRole)) {
+  this.isAdmin = true;
+}
+const numericRole = Number(user.id_role_fk ?? user.role_id ?? user.roleId);
+this.isAdmin = numericRole === 2 || numericRole === 3;
+```
+
+---
+
+### Descarga de formularios en PDF (sección Respuestas)
+
+#### Nueva funcionalidad
+Botón **PDF** en cada tarjeta de la sección de Respuestas que genera y descarga un archivo PDF con el contenido completo del formulario.
+
+#### Archivos nuevos/modificados (frontend)
+
+- **`pdf-export.service.ts`** (nuevo) — Servicio Angular con `jsPDF` que genera el PDF:
+  - Header azul con logo de NatGas (esquina derecha) y nombre del formulario
+  - Subtítulo "Hades  •  Reporte de formulario"
+  - Sección de información general: respondido por, fecha, hora, EDS, plaza, municipio, calificación
+  - Sección de preguntas y respuestas: preguntas numeradas en azul, respuestas, comentarios en itálica
+  - **Imágenes embebidas**: hace `fetch()` de las URLs de GCS y las incrusta con `doc.addImage()` — si falla, muestra `[Imagen no disponible]`
+  - Footer con número de página en cada hoja
+  - Nombre del archivo: `{nombre_form}_WO{id}_{fecha}.pdf`
+
+- **`responses.component.ts`** — Cambios:
+  - `downloadingId: number | null` para estado de carga por tarjeta
+  - `onDownloadPdf(response)` — carga detalles del WO y llama `pdfExport.export()`
+  - `buildDialogAnswers()` extraído como método privado reutilizado por `onViewDetails` y `onDownloadPdf`
+
+- **`responses.component.html`** — Botón PDF con ícono y estado de carga antes del botón "View Details"
+
+- **`responses.component.scss`** — Estilo `.download-btn` (verde al hover, deshabilitado durante carga)
+
+#### Dependencia
+```bash
+npm install jspdf  # ya instalado
+```
