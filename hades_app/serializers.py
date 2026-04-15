@@ -320,9 +320,40 @@ class FormTemplateSerializer(serializers.ModelSerializer):
         ]
 
     def get_assignments_count(self, obj):
-        """Cantidad de usuarios únicos asignados a este formulario."""
-        return (
+        """Cantidad de usuarios únicos con algún WO pendiente para este formulario.
+        Usa la misma lógica que get_assigned_users: cuenta usuarios que tienen
+        CUALQUIER WO incompleto, sin importar si tienen también WOs completados.
+        Así el número de la card siempre coincide con los seleccionados en el
+        modal de asignar, y para formularios persistentes nunca baja."""
+        from django.db.models import Max, Count, F, Q
+
+        answered_filter = (
+            (Q(formanswers__answer__isnull=False) & ~Q(formanswers__answer__exact="")) |
+            (Q(formanswers__image__isnull=False) & ~Q(formanswers__image__exact="")) |
+            (Q(formanswers__image_2__isnull=False) & ~Q(formanswers__image_2__exact="")) |
+            (Q(formanswers__image_3__isnull=False) & ~Q(formanswers__image_3__exact=""))
+        )
+        incomplete_ids = list(
             WorkOrder.objects.filter(form_template=obj, user_id__isnull=False)
+            .annotate(
+                ans_count=Count("formanswers", filter=answered_filter, distinct=True),
+                req_count=Count(
+                    "form_template__questions",
+                    filter=Q(form_template__questions__is_required=True),
+                    distinct=True,
+                ),
+            )
+            .exclude(ans_count__gte=F("req_count"), req_count__gt=0)
+            .values_list("id", flat=True)
+        )
+        latest_incomplete_ids = (
+            WorkOrder.objects.filter(id__in=incomplete_ids)
+            .values("user_id", "clave_eds")
+            .annotate(latest_id=Max("id"))
+            .values_list("latest_id", flat=True)
+        )
+        return (
+            WorkOrder.objects.filter(id__in=latest_incomplete_ids)
             .values("user_id")
             .distinct()
             .count()
@@ -351,10 +382,55 @@ class FormTemplateSerializer(serializers.ModelSerializer):
         )
 
     def get_assigned_users(self, obj):
-        """Lista de usuarios asignados con work_order_id para gestión."""
-        work_orders = WorkOrder.objects.filter(form_template=obj).values(
-            "id", "user_id", "clave_eds"
+        """Lista de usuarios asignados con work_order_id para gestión.
+        Retorna el WO pendiente más reciente por (usuario, EDS). Un WO es
+        pendiente si no tiene respuestas válidas (texto o imagen).
+
+        Esto cubre tanto formularios persistentes como no persistentes:
+        - Persistente: tras completarse se crea un nuevo WO pendiente; ese
+          nuevo WO es el que aparece aquí → usuario sigue asignado.
+        - No persistente: tras completarse no hay WOs pendientes → usuario
+          desaparece de la lista correctamente.
+        - Múltiples asignaciones diarias: aunque el WO con ID más alto ya
+          esté contestado, si existen WOs pendientes más antiguos el usuario
+          sigue apareciendo → evita re-asignaciones innecesarias.
+        """
+        from django.db.models import Max, Count, F, Q
+
+        answered_filter = (
+            (Q(formanswers__answer__isnull=False) & ~Q(formanswers__answer__exact="")) |
+            (Q(formanswers__image__isnull=False) & ~Q(formanswers__image__exact="")) |
+            (Q(formanswers__image_2__isnull=False) & ~Q(formanswers__image_2__exact="")) |
+            (Q(formanswers__image_3__isnull=False) & ~Q(formanswers__image_3__exact=""))
         )
+
+        # De todos los WOs del template, quedarse solo con los no completados
+        # (pending o draft: respuestas < preguntas obligatorias) y tomar el más
+        # reciente por (user_id, clave_eds).
+        # Dos queries separadas para evitar conflicto de Django ORM al encadenar
+        # annotate + exclude + values + annotate en un solo queryset.
+        incomplete_ids = list(
+            WorkOrder.objects.filter(form_template=obj, user_id__isnull=False)
+            .annotate(
+                ans_count=Count("formanswers", filter=answered_filter, distinct=True),
+                req_count=Count(
+                    "form_template__questions",
+                    filter=Q(form_template__questions__is_required=True),
+                    distinct=True,
+                ),
+            )
+            .exclude(ans_count__gte=F("req_count"), req_count__gt=0)
+            .values_list("id", flat=True)
+        )
+
+        latest_incomplete_ids = (
+            WorkOrder.objects.filter(id__in=incomplete_ids)
+            .values("user_id", "clave_eds")
+            .annotate(latest_id=Max("id"))
+            .values_list("latest_id", flat=True)
+        )
+
+        work_orders = WorkOrder.objects.filter(id__in=latest_incomplete_ids).values("id", "user_id", "clave_eds")
 
         # Batch query de usuarios para evitar N+1
         user_ids = {wo["user_id"] for wo in work_orders if wo["user_id"]}
